@@ -159,7 +159,8 @@ int RootDirEnd ;   // last sector from the root directory
 int MSXchrootSector;
 int MSXchrootStartIndex=0;
 int MSXpartition=0;
-
+int globalargc;
+char** globalargv;
 int verbose_option=0;
 bool do_extract=false;
 bool do_subdirs=true;
@@ -173,6 +174,7 @@ bool msx_allpart=false;
 static int show_version=0; /* If nonzero, display version information and exit */
 static int show_help=0; /* If nonzero, display usage information and exit */
 static int show_debug=0; /* If nonzero, display debug information while running */
+static int show_bootinfo=0; /* If nonzero, display debug information while running */
 static int do_fat16=0; /* Force FAT16 support, ide >32M automatically sets this */
 
 enum
@@ -321,11 +323,8 @@ void readBootSector()
 
 	RootDirEnd=RootDirStart+nbRootDirSectors-1;
 	maxCluster=sectorToCluster(nbSectors);
-	PRT_VERBOSE("maxCluster   "<<maxCluster);
-	PRT_VERBOSE("RootDirStart "<<RootDirStart);
-	PRT_VERBOSE("RootDirEnd   "<<RootDirEnd);
 	
-	if (verbose_option){
+	if (show_bootinfo){
 		cout <<"---------- Boot sector info -----"<<endl<<endl;
 		cout <<"  bytes per sector:      "<< rdsh(boot->bpsector) <<endl;
 		cout <<"  sectors per cluster:   "<< (int)(byte)boot->spcluster[0] <<endl;
@@ -336,6 +335,10 @@ void readBootSector()
 		cout <<"  sectors per FAT:       "<< rdsh(boot->sectorsfat) <<endl;
 		cout <<"  sectors per track:     "<< rdsh(boot->sectorstrack) <<endl;
 		cout <<"  number of sides:       "<< rdsh(boot->nrsides) <<endl;
+		cout <<endl<<"Calculated values"<<endl<<endl;
+		cout <<"maxCluster   "<<maxCluster <<endl;
+		cout <<"RootDirStart "<<RootDirStart <<endl;
+		cout <<"RootDirEnd   "<<RootDirEnd <<endl;
 		cout <<"---------------------------------"<< endl<<endl;
 	}
 }
@@ -1073,6 +1076,52 @@ bool chpart(int chpartition)
 	//P->size4
 }
 
+/** Routine to get the first sector of a given dir name
+  * input: correctly MSXformatted subdirectory name
+  * returns: 0 if given directory not found
+  */
+int findStartSectorOfDir(string dirname)
+{
+string work=dirname;
+string totalpath=string(".");
+unsigned pos = 0;
+int MSXDirSector=MSXchrootSector;
+int MSXDirStartIndex=MSXchrootStartIndex;
+//if (!msxdir_option){return;};
+while (!work.empty() ){
+	//cout <<"chroot 0: work=" <<work <<endl;
+	//remove (multiple)leading '/'
+	while (work.find_first_of("/\\")==0){
+		work.erase(0,1);
+		//cout <<"chroot 1: work=" <<work <<endl;
+	}
+	string firstpart;
+	int pos;
+	pos= work.find_first_of("/\\");
+	if ( pos != string::npos){
+		firstpart=work.substr(0,pos);
+		work=work.substr(pos + 1);
+	} else {
+		firstpart=work;
+		work.clear();
+	};
+	// find firstpart directory 
+	string simple=makeSimpleMSXFileName(firstpart);
+	struct MSXDirEntry* msxdirentry=findEntryInDir(simple,MSXDirSector,MSXDirStartIndex);
+	if (msxdirentry == NULL){
+		PRT_VERBOSE("Couldn't find directory: "<<dirname);
+		return 0;
+	} else {
+		MSXDirSector=clusterToSector(rdsh(msxdirentry->startcluster));
+		MSXDirStartIndex=2;
+		totalpath+="/"+firstpart;
+		mkdir(totalpath.c_str(),ACCESSPERMS);
+		}
+}
+return MSXDirSector;
+}
+
+
 //routine to update the global vars: MSXchrootSector,MSXchrootStartIndex
 void chroot()
 {
@@ -1176,10 +1225,11 @@ void recurseDirExtract(const string &DirName,int sector,int direntryindex)
 		struct MSXDirEntry* direntry =(MSXDirEntry*)(FSImage+SECTOR_SIZE*sector+32*i);
 		if (direntry->filename[0] != 0xe5 && direntry->filename[0] != 0x00 ){
 			string filename=condensName(direntry);
-			string fullname=DirName+"/"+filename;
-			if (verbose_option){
-				cout << fullname<<endl;
+			string fullname=filename;
+			if (! DirName.empty()){
+			  fullname=DirName+"/"+filename;
 			}
+			PRT_VERBOSE(fullname);
 			if (do_extract && direntry->attrib != T_MSX_DIR){
 				fileExtract(fullname,direntry);
 			}
@@ -1244,6 +1294,47 @@ void readDSK(const string fileName)
 
 }
 
+void doSpecifiedExtraction(void)
+{
+  if (optind < globalargc ){
+    PRT_VERBOSE("Going to extract only specified files/directories");
+    string work=string(globalargv[optind++]);
+    string fullname=work;
+    //remove (multiple)leading '/'
+    while (work.find_first_of("/\\")==0){
+      work.erase(0,1);
+    };
+    int MSXDirSector=MSXchrootSector;
+    int MSXDirStartIndex=MSXchrootStartIndex;
+    //now resolv directory if needed
+    int pos=work.find_last_of("/\\");
+    if ( pos != string::npos){
+      string firstpart=work.substr(0,pos);
+      work=work.substr(pos + 1);
+      MSXDirSector=findStartSectorOfDir(firstpart);
+      if (MSXDirSector == 0){
+	cout << "Couldn't find "<< work<<endl;
+	return;
+	};
+    };
+
+    struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(work),MSXDirSector,MSXDirStartIndex);
+    if (msxdirentry == NULL){return;};
+    if (do_extract && msxdirentry->attrib != T_MSX_DIR){
+	PRT_VERBOSE(fullname);
+	fileExtract(fullname,msxdirentry);
+    }
+    if (msxdirentry->attrib == T_MSX_DIR){
+      recurseDirExtract(
+	  work ,
+	  clusterToSector(rdsh(msxdirentry->startcluster)) ,
+	  2); //read subdir and skip entries for '.' and '..'
+    }
+
+  } else {
+    recurseDirExtract(string(""),MSXchrootSector,MSXchrootStartIndex);
+  }
+}
 
 void display_usage(void)
 {
@@ -1350,6 +1441,7 @@ static struct option long_options[] =
   {"version", no_argument, &show_version, 1},
   {"fat16", no_argument, &do_fat16, 1},
   {"debug", no_argument, 0, DEBUG_OPTION},
+  {"bootinfo", no_argument, &show_bootinfo, 1 },
   {0, 0, 0, 0}
 };
 
@@ -1423,6 +1515,9 @@ int main(int argc, char **argv)
 
   /* Parse all options and non-options as they appear.  */
 
+  //quick hack need to clear this one later
+  globalargc=argc;
+  globalargv=argv;
 
   //input_files = 0;
 
@@ -1648,12 +1743,12 @@ see the file named COPYING for details.\n");
 		  } else {
 		    if (chpart(MSXpartition)){
 		      chroot();
-		      recurseDirExtract(string("."),MSXchrootSector,MSXchrootStartIndex);
+		      doSpecifiedExtraction();
 		    }
 		  }
 		} else {
 			chroot();
-			recurseDirExtract(string("."),MSXchrootSector,MSXchrootStartIndex);
+			doSpecifiedExtraction();
 		}
 	      break;
 	    case APPEND_COMMAND:
@@ -1668,7 +1763,7 @@ see the file named COPYING for details.\n");
 		  chpart(MSXpartition);
 		  }
 		}
-		PRT_VERBOSE("optind "<< optind << " argc "<<argc);
+		PRT_DEBUG("optind "<< optind << " argc "<<argc);
 		chroot();
 		while (optind < argc ){
 			updateInDSK(string(argv[optind++]));

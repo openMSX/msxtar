@@ -1,2 +1,2 @@
 all: main.cc
-	${CXX} main.cc -o msxtar
+	${CXX} main.cc -g -o msxtar
