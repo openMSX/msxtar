@@ -1,5 +1,13 @@
 $Id$
 
+2004-07-13 David Heremans <david.heremans@gnu-linux.net>
+	* Added the HOW-TO file
+	* Added a minimal Makefile
+
+2004-07-12 David Heremans <david.heremans@gnu-linux.net>
+	* Added update support for files
+	* Also build checks to verify if a subdir already exists
+
 2004-07-08 David Heremans <david.heremans@gnu-linux.net>
 	* Corrected a limitation in getNextSector
 	* Added partition support for update,list and extract commands

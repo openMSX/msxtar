@@ -655,7 +655,7 @@ string makeSimpleMSXFileName(const string& fullfilename)
 /** This function creates a new MSX subdir with given date 'd' and time 't'
   * in the subdir pointed at by 'sector' and 'direntryindex' in the newly
   * created subdir the entries for '.' and '..' are created
-  * returns: the first ector of the new subdir
+  * returns: the first sector of the new subdir
   *          0 in case no directory could be created
   */
 int AddMSXSubdir(string msxName,int t,int d,int sector,byte direntryindex)
@@ -671,7 +671,7 @@ int AddMSXSubdir(string msxName,int t,int d,int sector,byte direntryindex)
 	direntry->attrib=T_MSX_DIR;
 	setsh(direntry->time, t);
 	setsh(direntry->date, d);
-	memcpy(direntry,msxName.c_str(),11);
+	memcpy(direntry,makeSimpleMSXFileName(msxName).c_str(),11);
 
 	//direntry->filesize=fsize;
 	word curcl = 2;
@@ -724,48 +724,29 @@ int AddSubdirtoDSK(string hostName,string msxName,int sector,byte direntryindex)
 	return logicalSector;
 }
 
-/** Add file to the MSX disk in the subdir pointed to by 'sector'
-  * returns: nothing usefull yet :-)
+/** This file alters the filecontent of agiven file
+  * It only changes the file content (and the filesize in the msxdirentry)
+  * It doesn't changes timestamps nor filename, filetype etc.
+  * Output: nothing usefull yet
   */
-int AddFiletoDSK(string hostName,string msxName,int sector,byte direntryindex)
+int AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 {
-	//first find out if the filename already exists current dir
-	struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(msxName),sector,direntryindex); 
-	if (msxdirentry!=NULL){
-	  PRT_VERBOSE("Preserving entry "<<msxName );
-	  return 0;
-	};
-	struct physDirEntry result;
-	result=addEntryToDir(sector,direntryindex);
-	if (result.index > 15){
-		cout << "couldn't add entry"<<hostName <<endl;
-		return 255;
-	}
-	struct MSXDirEntry* direntry =(MSXDirEntry*)(FSImage+SECTOR_SIZE*result.sector+32*result.index);
-	direntry->attrib=T_MSX_REG;
-	PRT_VERBOSE(hostName<<" \t-> \""<<makeSimpleMSXFileName(msxName) << '"' );
-	memcpy(direntry,makeSimpleMSXFileName(msxName).c_str(),11);
-
-	// compute time/date stamps
+	bool needsNew=false;
 	int fsize;
 	struct stat fst;
 	memset(&fst, 0, sizeof(struct stat));
 	stat(hostName.c_str(), &fst);
-	struct tm mtim = *localtime(&(fst.st_mtime));
-	int t = (mtim.tm_sec >> 1) + (mtim.tm_min << 5) +
-		(mtim.tm_hour << 11);
-	setsh(direntry->time, t);
-	t = mtim.tm_mday + ((mtim.tm_mon + 1) << 5) +
-	    ((mtim.tm_year + 1900 - 1980) << 9);
-	setsh(direntry->date, t);
 	fsize = fst.st_size;
 	PRT_DEBUG("Filesize " << fsize);
 
-	//direntry->filesize=fsize;
-	word curcl = 2;
-	curcl=findFirstFreeCluster();
+	word curcl =rdsh(msxdirentry->startcluster) ;
+	// if entry first used then no cluster assigned yet
+	if (curcl==0){
+		curcl=findFirstFreeCluster();
+		setsh(msxdirentry->startcluster, curcl);
+		needsNew=true;
+	}
 	PRT_DEBUG("Starting at cluster " << curcl );
-	setsh(direntry->startcluster, curcl);
 
 	int size = fsize;
 	int prevcl = 0;
@@ -791,9 +772,19 @@ int AddFiletoDSK(string hostName,string msxName,int sector,byte direntryindex)
 		}
 		prevcl = curcl;
 		//now we check if we continue in the current clusterstring or need to allocate extra unused blocks
-		do {
-			curcl++;
-		} while((curcl <= maxCluster) && ReadFAT(curcl));
+		//do {
+		if (needsNew){
+			//need extra space for this file
+			curcl=findFirstFreeCluster();
+		} else {
+			// follow cluster-Fat-stream
+			curcl=ReadFAT(curcl);
+			if (curcl == EOF_FAT){
+				curcl=findFirstFreeCluster();
+				needsNew=true;
+			}
+		}
+		//} while((curcl <= maxCluster) && ReadFAT(curcl));
 		PRT_DEBUG("Continuing at cluster " << curcl);
 	}
 	fclose(file);
@@ -801,19 +792,69 @@ int AddFiletoDSK(string hostName,string msxName,int sector,byte direntryindex)
 	if ((size == 0) && (curcl <= maxCluster)) {
 		// TODO: check what an MSX does with filesize zero and fat allocation;
 		if(prevcl==0) {
-			WriteFAT(curcl, EOF_FAT);
-			PRT_DEBUG("Ending at cluster " << curcl);
-		} else {
-			WriteFAT(prevcl, EOF_FAT); 
-			PRT_DEBUG("Ending at cluster " << prevcl);
+			prevcl=curcl;
+			curcl=ReadFAT(curcl);
+		};
+		WriteFAT(prevcl, EOF_FAT); 
+		PRT_DEBUG("Ending at cluster " << prevcl);
+		//cleaning rest of FAT chain if needed
+		while (!needsNew){
+			prevcl=curcl;
+			if (curcl != EOF_FAT){
+				curcl=ReadFAT(curcl);
+			} else {
+				needsNew=true;
+			}
+			PRT_DEBUG("Cleaning cluster " << prevcl << " from FAT");
+			WriteFAT(prevcl, 0);
 		}
+		
 	} else {
 		//TODO: don't we need a EOF_FAT in this case as well ?
 		// find out and adjust code here
 		cout <<"Fake Diskimage full: "<< hostName <<" truncated.";
 	}
 	//write (possibly truncated) file size
-	setlg(direntry->size,fsize-size);
+	setlg(msxdirentry->size,fsize-size);
+
+}
+
+
+/** Add file to the MSX disk in the subdir pointed to by 'sector'
+  * returns: nothing usefull yet :-)
+  */
+int AddFiletoDSK(string hostName,string msxName,int sector,byte direntryindex)
+{
+	//first find out if the filename already exists current dir
+	struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(msxName),sector,direntryindex); 
+	if (msxdirentry!=NULL){
+	  PRT_VERBOSE("Preserving entry "<<msxName );
+	  return 0;
+	};
+	struct physDirEntry result;
+	result=addEntryToDir(sector,direntryindex);
+	if (result.index > 15){
+		cout << "couldn't add entry"<<hostName <<endl;
+		return 255;
+	}
+	struct MSXDirEntry* direntry =(MSXDirEntry*)(FSImage+SECTOR_SIZE*result.sector+32*result.index);
+	direntry->attrib=T_MSX_REG;
+	PRT_VERBOSE(hostName<<" \t-> \""<<makeSimpleMSXFileName(msxName) << '"' );
+	memcpy(direntry,makeSimpleMSXFileName(msxName).c_str(),11);
+
+	// compute time/date stamps
+	struct stat fst;
+	memset(&fst, 0, sizeof(struct stat));
+	stat(hostName.c_str(), &fst);
+	struct tm mtim = *localtime(&(fst.st_mtime));
+	int t = (mtim.tm_sec >> 1) + (mtim.tm_min << 5) +
+		(mtim.tm_hour << 11);
+	setsh(direntry->time, t);
+	t = mtim.tm_mday + ((mtim.tm_mon + 1) << 5) +
+	    ((mtim.tm_year + 1900 - 1980) << 9);
+	setsh(direntry->date, t);
+
+	AlterFileInDSK(direntry,hostName);
 }
 
 /** transfer directory and all its subdirectories to the MSX diskimage
@@ -841,7 +882,14 @@ void recurseDirFill(const string &DirName,int sector,int direntryindex)
 		else if (d->d_type ==DT_DIR && name != string(".") && name != string("..") ) {
 			if (do_subdirs){
 			PRT_VERBOSE(DirName + '/' + name<<" \t-> \""<<makeSimpleMSXFileName(name) << '"' );
+			struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(name),sector,direntryindex); 
+			if (msxdirentry!=NULL){
+			  PRT_VERBOSE("Dir entry "<<name <<" exists already ");
+			  result= clusterToSector(rdsh(msxdirentry->startcluster));
+			} else {
+			  PRT_VERBOSE("Adding dir entry "<<name);
 			result=AddSubdirtoDSK(DirName + '/' + name,name,sector,direntryindex); // used here to add file into fake dsk
+			}
 
 			recurseDirFill( DirName + '/' + name ,result,0);
 			} else {
@@ -865,6 +913,27 @@ void writeImageToDisk(string filename)
 		} else {
 			cout << "Couldn't open file for writing!";
 		}
+}
+
+void updatecreateDSK(const string fileName)
+{
+	struct stat fst;
+	memset(&fst, 0, sizeof(struct stat));
+
+	PRT_DEBUG("trying to stat : " << fileName );
+	stat(fileName.c_str(), &fst);
+	if (fst.st_mode & S_IFDIR ){
+		// this should be a directory
+		recurseDirFill(fileName,MSXchrootSector,MSXchrootStartIndex);
+	} else {
+		// this should be a normal file
+		PRT_VERBOSE("Updating file "<<fileName);
+		//int result=AddFiletoDSK(fileName,fileName,MSXchrootSector,MSXchrootStartIndex); // used here to add file into fake dsk in rootdir!!
+		//first find out if the filename already exists current dir
+		struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(fileName),MSXchrootSector,MSXchrootStartIndex);
+		AlterFileInDSK(msxdirentry,fileName);
+	};
+
 }
 
 
@@ -907,7 +976,8 @@ void updateInDSK(const string name)
 		if (keep_option){
 		  PRT_VERBOSE("Preserving entry "<<name );
 		} else {
-		  PRT_VERBOSE("Updating entry not yet implemented "<<name );
+		  //PRT_VERBOSE("Updating entry not yet implemented "<<name );
+		  updatecreateDSK(name);
 		}
 	}
 }
@@ -1039,7 +1109,8 @@ while (!work.empty() ){
 }
 
 }
-
+/** Set the entries from direntry to the timestamp of resultFile
+  */
 void changeTime(string resultFile,struct MSXDirEntry* direntry)
 {
 	if (touch_option){
