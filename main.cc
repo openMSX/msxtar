@@ -54,11 +54,10 @@ typedef unsigned short word;
 /** 32 bit unsigned integer */
 typedef unsigned int uint32;
 
-#define DEBUGVAL 0
 #define PRT_DEBUG(mes)				\
 	do {					\
-		if (DEBUGVAL) {			\
-			cout << mes << endl;	\
+		if (show_debug) {		\
+			cout << "DEBUG: "<< mes << endl;	\
 		}				\
 	} while (0)
 
@@ -173,7 +172,14 @@ bool msx_allpart=false;
 
 static int show_version=0; /* If nonzero, display version information and exit */
 static int show_help=0; /* If nonzero, display usage information and exit */
+static int show_debug=0; /* If nonzero, display debug information while running */
 static int do_fat16=0; /* Force FAT16 support, ide >32M automatically sets this */
+
+enum
+{
+  DEBUG_OPTION = CHAR_MAX + 1,
+  OTHER_OPTION
+};
 
 // bootblock created with regular nms8250 and '_format'
 byte Dos1BootBlock[] =
@@ -427,8 +433,10 @@ void setBootSector(word nbSectors)
   */
 word ReadFAT(word clnr)
 {
+	PRT_DEBUG("ReadFAT(cnlr= "<<clnr<<");");
 	if (!do_fat16){
 		byte *P = FSImage+SECTOR_SIZE + (clnr * 3) / 2;
+		PRT_DEBUG("returning "<< ( (clnr & 1) ?  (P[0] >> 4) + (P[1] << 4) : P[0] + ((P[1] & 0x0F) << 8)) );
 		return (clnr & 1) ?
 		(P[0] >> 4) + (P[1] << 4) :
 		P[0] + ((P[1] & 0x0F) << 8);
@@ -444,7 +452,7 @@ word ReadFAT(word clnr)
 void WriteFAT(word clnr, word val)
 {
 	if (!do_fat16){
-		PRT_DEBUG("Updating FAT "<<clnr<<" will point to "<<val);
+		PRT_DEBUG("WriteFAT(cnlr= "<<clnr<<",val= "<<val<<");");
 		byte* P=FSImage+SECTOR_SIZE + (clnr * 3) / 2;
 		if (clnr & 1) { 
 			P[0] = (P[0] & 0x0F) + (val << 4);
@@ -737,16 +745,17 @@ int AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 	memset(&fst, 0, sizeof(struct stat));
 	stat(hostName.c_str(), &fst);
 	fsize = fst.st_size;
-	PRT_DEBUG("Filesize " << fsize);
+	PRT_DEBUG("AlterFileInDSK: Filesize " << fsize);
 
 	word curcl =rdsh(msxdirentry->startcluster) ;
 	// if entry first used then no cluster assigned yet
 	if (curcl==0){
 		curcl=findFirstFreeCluster();
 		setsh(msxdirentry->startcluster, curcl);
+		WriteFAT(curcl, EOF_FAT); 
 		needsNew=true;
 	}
-	PRT_DEBUG("Starting at cluster " << curcl );
+	PRT_DEBUG("AlterFileInDSK: Starting at cluster " << curcl );
 
 	int size = fsize;
 	int prevcl = 0;
@@ -758,7 +767,7 @@ int AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 		byte* buf=FSImage+logicalSector*SECTOR_SIZE;
 		for (int j=0 ; j < sectorsPerCluster ; j++){
 			if (size){
-				PRT_DEBUG("relative sector "<<j<<" in cluster "<<curcl);
+				PRT_DEBUG("AlterFileInDSK: relative sector "<<j<<" in cluster "<<curcl);
 				// more poitical correct:
 				//We should read 'size'-bytes instead of 'SECTOR_SIZE' if it is the end of the file
 				fread(buf,1,SECTOR_SIZE,file);
@@ -775,6 +784,7 @@ int AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 		//do {
 		if (needsNew){
 			//need extra space for this file
+			WriteFAT(curcl, EOF_FAT); 
 			curcl=findFirstFreeCluster();
 		} else {
 			// follow cluster-Fat-stream
@@ -785,7 +795,7 @@ int AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 			}
 		}
 		//} while((curcl <= maxCluster) && ReadFAT(curcl));
-		PRT_DEBUG("Continuing at cluster " << curcl);
+		PRT_DEBUG("AlterFileInDSK: Continuing at cluster " << curcl);
 	}
 	fclose(file);
 
@@ -796,7 +806,7 @@ int AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 			curcl=ReadFAT(curcl);
 		};
 		WriteFAT(prevcl, EOF_FAT); 
-		PRT_DEBUG("Ending at cluster " << prevcl);
+		PRT_DEBUG("AlterFileInDSK: Ending at cluster " << prevcl);
 		//cleaning rest of FAT chain if needed
 		while (!needsNew){
 			prevcl=curcl;
@@ -805,7 +815,7 @@ int AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 			} else {
 				needsNew=true;
 			}
-			PRT_DEBUG("Cleaning cluster " << prevcl << " from FAT");
+			PRT_DEBUG("AlterFileInDSK: Cleaning cluster " << prevcl << " from FAT");
 			WriteFAT(prevcl, 0);
 		}
 		
@@ -942,24 +952,26 @@ void addcreateDSK(const string fileName)
 	// Here we create the fake diskimages based upon the files that can be
 	// found in the 'fileName' directory or the single file
 	//PRT_DEBUG("Trying FDC_DirAsDSK image");
+	PRT_DEBUG("addcreateDSK( "<<fileName<<");");
 	struct stat fst;
 	memset(&fst, 0, sizeof(struct stat));
 
-	PRT_DEBUG("trying to stat : " << fileName );
+	PRT_DEBUG("addcreateDSK: trying to stat : " << fileName );
 	stat(fileName.c_str(), &fst);
 	if (fst.st_mode & S_IFDIR ){
 		// this should be a directory
-		PRT_VERBOSE("Adding directory "<<fileName);
+		PRT_VERBOSE("addcreateDSK: Adding directory "<<fileName);
 		DIR* dir = opendir(fileName.c_str());
 		if (dir != NULL ) {
 			// store filename as chroot dir for the msx disk
 			MSXrootdir=fileName;
 			recurseDirFill(fileName,MSXchrootSector,MSXchrootStartIndex);
 		} else {
-			PRT_DEBUG("couldn't open directory " << fileName);
+			PRT_DEBUG("addcreateDSK: couldn't open directory " << fileName);
 		};
 	} else {
 		// this should be a normal file
+	  PRT_DEBUG("addcreateDSK: Adding file "<<fileName);
 	  PRT_VERBOSE("Adding file "<<fileName);
 	  int result=AddFiletoDSK(fileName,fileName,MSXchrootSector,MSXchrootStartIndex); // used here to add file into fake dsk in rootdir!!
 	};
@@ -1337,6 +1349,7 @@ static struct option long_options[] =
   {"verbose", no_argument, 0, 'v'},
   {"version", no_argument, &show_version, 1},
   {"fat16", no_argument, &do_fat16, 1},
+  {"debug", no_argument, 0, DEBUG_OPTION},
   {0, 0, 0, 0}
 };
 
@@ -1434,6 +1447,15 @@ int main(int argc, char **argv)
 	 optchar != -1 && optchar != 1)
     switch (optchar)
       {
+      case DEBUG_OPTION :
+	show_debug=1;
+	cout << "----------------------------------------------------------" << endl;
+	cout << "This debug mode is intended for people who want to check  " << endl;
+	cout << "the dataflow within the msxtar program.                   " << endl;
+	cout << "Consider this mode verry unpractical for normal usage :-) " << endl;
+	cout << "----------------------------------------------------------" << endl;
+	break;
+
       case '?':
 	display_usage();
 
@@ -1516,7 +1538,6 @@ int main(int argc, char **argv)
 	maincommand=EXTRACT_COMMAND;
 	do_extract=true;
 	break;
-
       case 'z':
 	//set_use_compress_program_option ("gzip");
 	break;
