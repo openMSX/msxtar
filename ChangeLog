@@ -1,8 +1,12 @@
 $Id$
 
+2004-07-08 David Heremans <david.heremans@gnu-linux.net>
+	* Corrected a limitation in getNextSector
+	* Added partition support for update,list and extract commands
+
 2004-07-06 David Heremans <david.heremans@gnu-linux.net>
 	* Initial CVS commit. Only size=single,double and ide work,
-	  still possible to create twice the same filenmae in a directory
-	  during a image creation, no partition support yet...
+	  still possible to create twice the same filename in a directory
+	  during am image creation, no partition support yet...
 	  But good enough for 'normal' usage :-)
 
