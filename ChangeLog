@@ -1,5 +1,12 @@
 $Id$
 
+2005-12-04 BouKiCHi
+	* added a recognizing T98Image HDD image.
+	* fixed msxtar breaks up IDE image.
+	* improved some routines to compile on MinGW.
+	* improved ".." in sub directory to point to root properly.
+	* improved to ignore if first charactor in filename is '.'.
+
 2004-07-26 David Heremans <david.heremans@gnu-linux.net>
 	* Extract commands can now extract a list of single
 	  files/subdirs as listed on the command line

@@ -1,6 +1,7 @@
 /* An MSX-diskimage creation/extraction program
 
    Copyright (C) 2004 David Heremans <dhran@pi.be>
+   Copyright (C) 2005 BouKiCHi
 
    This program is free software; you can redistribute it and/or modify it
    under the terms of the GNU General Public License as published by the
@@ -117,6 +118,20 @@ struct partition {
 	byte size4[4];         /* nr of sectors in partition */
 };
 
+struct pc98part {
+	byte boota;
+	byte bootb;
+	byte reserveA[6];
+	byte reserveB[2];
+	byte startcyl[2];
+	byte reserveC[2];
+	byte endcyl[2];
+	byte name[16];
+};
+
+#ifndef ACCESSPERMS
+#define ACCESSPERMS 0777 // is this ok?
+#endif
 
 
 word EOF_FAT=0x0FFF; /* signals EOF in FAT12 */
@@ -139,6 +154,7 @@ struct physDirEntry
 
 char* program_name;
 
+long sizeOfDskFile;
 byte* dskImage;
 byte* FSImage;
 string MSXrootdir;
@@ -162,6 +178,7 @@ int MSXpartition=0;
 int globalargc;
 char** globalargv;
 int verbose_option=0;
+bool do_flat=false;
 bool do_extract=false;
 bool do_subdirs=true;
 bool do_singlesided=false;
@@ -311,11 +328,12 @@ void readBootSector()
 	struct MSXBootSector *boot=(struct MSXBootSector*)FSImage;
 
 	nbSectors = rdsh(boot->nrsectors); // asume a DS disk is used
+	SECTOR_SIZE = rdsh(boot->bpsector);
 	sectorsPerTrack = rdsh(boot->nrsectors);
 	nbSides = rdsh(boot->nrsides);
 	nbFats=(byte)boot->nrfats[0];
 	sectorsPerFat=rdsh(boot->sectorsfat);
-	nbRootDirSectors=rdsh(boot->direntries)/16;
+	nbRootDirSectors=rdsh(boot->direntries)/(SECTOR_SIZE/32);
 	sectorsPerCluster=(int)(byte)boot->spcluster[0] ;
 
 	RootDirStart=1+nbFats*sectorsPerFat;
@@ -482,6 +500,16 @@ word findFirstFreeCluster(void)
 	};
 	return cluster;
 }
+
+void mkdir_ex(const char *name,mode_t perm)
+{
+#ifdef __WIN32__
+	mkdir(name);
+#else
+	mkdir(name,perm);
+#endif
+}
+
 
 /** Returns the index of a free (or with deleted file) entry
   * in the current dir sector
@@ -710,8 +738,11 @@ int AddMSXSubdir(string msxName,int t,int d,int sector,byte direntryindex)
 	direntry->attrib=T_MSX_DIR;
 	setsh(direntry->time, t);
 	setsh(direntry->date, d);
-	int parentcluster=( sector-10)/2;
-	setsh(direntry->startcluster, parentcluster);
+
+	int parentCluster = sectorToCluster(sector);
+	if (sector == RootDirStart) parentCluster=0;
+
+	setsh(direntry->startcluster, parentCluster);
 
 	return logicalSector;
 }
@@ -748,6 +779,7 @@ int AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 	memset(&fst, 0, sizeof(struct stat));
 	stat(hostName.c_str(), &fst);
 	fsize = fst.st_size;
+
 	PRT_DEBUG("AlterFileInDSK: Filesize " << fsize);
 
 	word curcl =rdsh(msxdirentry->startcluster) ;
@@ -765,7 +797,7 @@ int AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 	//open file for reading
 	FILE* file = fopen(hostName.c_str(),"rb");
 
-	while (size && (curcl <= maxCluster)) {
+	while (file && size && (curcl <= maxCluster)) {
 		int logicalSector= clusterToSector(curcl);
 		byte* buf=FSImage+logicalSector*SECTOR_SIZE;
 		for (int j=0 ; j < sectorsPerCluster ; j++){
@@ -800,7 +832,7 @@ int AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 		//} while((curcl <= maxCluster) && ReadFAT(curcl));
 		PRT_DEBUG("AlterFileInDSK: Continuing at cluster " << curcl);
 	}
-	fclose(file);
+	if (file) fclose(file);
 
 	if ((size == 0) && (curcl <= maxCluster)) {
 		// TODO: check what an MSX does with filesize zero and fat allocation;
@@ -852,6 +884,9 @@ int AddFiletoDSK(string hostName,string msxName,int sector,byte direntryindex)
 	}
 	struct MSXDirEntry* direntry =(MSXDirEntry*)(FSImage+SECTOR_SIZE*result.sector+32*result.index);
 	direntry->attrib=T_MSX_REG;
+
+	setsh(direntry->startcluster,0);
+
 	PRT_VERBOSE(hostName<<" \t-> \""<<makeSimpleMSXFileName(msxName) << '"' );
 	memcpy(direntry,makeSimpleMSXFileName(msxName).c_str(),11);
 
@@ -870,13 +905,26 @@ int AddFiletoDSK(string hostName,string msxName,int sector,byte direntryindex)
 	AlterFileInDSK(direntry,hostName);
 }
 
+int check_stat(const string &name)
+{
+	struct stat fst;
+	memset(&fst, 0, sizeof(struct stat));
+	stat(name.c_str(), &fst);
+
+	if (fst.st_mode & S_IFDIR)
+		return 0; // it's a directory
+
+	return 1; // if it's a file
+}
+
+
 /** transfer directory and all its subdirectories to the MSX diskimage
   */
 void recurseDirFill(const string &DirName,int sector,int direntryindex)
 {
 	int result;
 
-	PRT_DEBUG("Trying to read directory"<<DirName);
+	PRT_DEBUG("Trying to read directory "<<DirName);
 
 	DIR* dir = opendir(DirName.c_str());
 
@@ -889,10 +937,13 @@ void recurseDirFill(const string &DirName,int sector,int direntryindex)
 	while (d) {
 		string name(d->d_name);
 		PRT_DEBUG("reading name in dir :" << name);
-		if ( d->d_type ==DT_REG ) {
-			result=AddFiletoDSK(DirName + '/' + name,name,sector,direntryindex); // used here to add file into fake dsk
+		if ( check_stat(name) ) { // true if a file
+			if (!name.empty() && name[0] != '.')
+					result=AddFiletoDSK(DirName + '/' + name,name,sector,direntryindex); // used here to add file into fake dsk
+			else
+					cout << name << ": ignored file which first charactor is \".\"" << endl;
 		}
-		else if (d->d_type ==DT_DIR && name != string(".") && name != string("..") ) {
+		else if (name != string(".") && name != string("..") ) {
 			if (do_subdirs){
 			PRT_VERBOSE(DirName + '/' + name<<" \t-> \""<<makeSimpleMSXFileName(name) << '"' );
 			struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(name),sector,direntryindex); 
@@ -921,7 +972,10 @@ void writeImageToDisk(string filename)
 
 		FILE* file = fopen(filename.c_str(), "wb");
 		if (file) {
-			fwrite(dskImage , 1, nbSectors*SECTOR_SIZE, file);
+			if (sizeOfDskFile)
+				fwrite(dskImage , 1, sizeOfDskFile, file);
+			else
+				fwrite(dskImage , 1, nbSectors*SECTOR_SIZE, file);
 			fclose(file);
 		} else {
 			cout << "Couldn't open file for writing!";
@@ -930,6 +984,8 @@ void writeImageToDisk(string filename)
 
 void updatecreateDSK(const string fileName)
 {
+	int result;
+
 	struct stat fst;
 	memset(&fst, 0, sizeof(struct stat));
 
@@ -937,7 +993,26 @@ void updatecreateDSK(const string fileName)
 	stat(fileName.c_str(), &fst);
 	if (fst.st_mode & S_IFDIR ){
 		// this should be a directory
-		recurseDirFill(fileName,MSXchrootSector,MSXchrootStartIndex);
+		if (do_flat || !do_subdirs) {
+		// put files in the directory to root
+			recurseDirFill(fileName,MSXchrootSector,MSXchrootStartIndex);
+		} else {
+			PRT_VERBOSE("./" + fileName<<" \t-> \""<<makeSimpleMSXFileName(fileName) << '"' );
+			struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(fileName),
+							MSXchrootSector,MSXchrootStartIndex); 
+
+			if (msxdirentry!=NULL){
+			  PRT_VERBOSE("Dir entry "<<fileName <<" exists already ");
+			  result= clusterToSector(rdsh(msxdirentry->startcluster));
+			} else {
+			  PRT_VERBOSE("Adding dir entry "<<fileName);
+			result=AddSubdirtoDSK(fileName,fileName,MSXchrootSector,MSXchrootStartIndex);
+				 // used here to add file into fake dsk
+			}
+
+			recurseDirFill( fileName ,result,0);
+		}
+
 	} else {
 		// this should be a normal file
 		PRT_VERBOSE("Updating file "<<fileName);
@@ -952,6 +1027,8 @@ void updatecreateDSK(const string fileName)
 
 void addcreateDSK(const string fileName)
 {
+	int result;
+
 	// Here we create the fake diskimages based upon the files that can be
 	// found in the 'fileName' directory or the single file
 	//PRT_DEBUG("Trying FDC_DirAsDSK image");
@@ -964,14 +1041,27 @@ void addcreateDSK(const string fileName)
 	if (fst.st_mode & S_IFDIR ){
 		// this should be a directory
 		PRT_VERBOSE("addcreateDSK: Adding directory "<<fileName);
-		DIR* dir = opendir(fileName.c_str());
-		if (dir != NULL ) {
-			// store filename as chroot dir for the msx disk
+
+		if (do_flat || !do_subdirs) {
+		// put files in the directory to root
 			MSXrootdir=fileName;
 			recurseDirFill(fileName,MSXchrootSector,MSXchrootStartIndex);
 		} else {
-			PRT_DEBUG("addcreateDSK: couldn't open directory " << fileName);
-		};
+
+			PRT_VERBOSE("./" + fileName<<" \t-> \""<<makeSimpleMSXFileName(fileName) << '"' );
+			struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(fileName),
+							MSXchrootSector,MSXchrootStartIndex); 
+
+			if (msxdirentry!=NULL){
+			  PRT_VERBOSE("Dir entry "<<fileName <<" exists already ");
+			  result= clusterToSector(rdsh(msxdirentry->startcluster));
+			} else {
+			  PRT_VERBOSE("Adding dir entry "<<fileName);
+			result=AddSubdirtoDSK(fileName,fileName,MSXchrootSector,MSXchrootStartIndex);
+				 // used here to add file into fake dsk
+			}
+			recurseDirFill( fileName ,result,0);
+		}
 	} else {
 		// this should be a normal file
 	  PRT_DEBUG("addcreateDSK: Adding file "<<fileName);
@@ -1018,7 +1108,7 @@ void createEmptyDSK()
 
 	// Assign default empty values to disk
 	memset( FSImage+SECTOR_SIZE, 0x00, RootDirEnd*SECTOR_SIZE);
-	memset( FSImage+(1+RootDirEnd)*SECTOR_SIZE, 0xE5, (nbSectors-(1+RootDirEnd))*SECTOR_SIZE);
+	memset( FSImage+((1+RootDirEnd)*SECTOR_SIZE), 0xE5, (nbSectors-(1+RootDirEnd))*SECTOR_SIZE);
 	// for some reason the first 3bytes are used to indicate the end of a cluster, making the first available cluster nr 2
 	// some sources say that this indicates the disk fromat and FAT[0]should 0xF7 for single sided disk, and 0xF9 for double sided disks
 	// TODO: check this :-)
@@ -1062,6 +1152,27 @@ string condensName(struct MSXDirEntry* direntry)
   */
 bool chpart(int chpartition)
 {
+	int surf,sec,ssize,scyl;
+	if (strncmp((char*)dskImage,"T98HDDIMAGE.R0",14)==0)
+	{
+		// 0x110 size of the header(long),cylinder(long),
+		// surface(word),sector(word),secsize(word)
+		cout << "T98header recognized" << endl;
+		surf = rdsh(dskImage+0x110+8);
+		sec  = rdsh(dskImage+0x110+10);
+		ssize = rdsh(dskImage+0x110+12);
+
+		SECTOR_SIZE=ssize;
+
+		struct pc98part *P98=(struct pc98part *)(dskImage+0x400+(chpartition*16));
+		scyl = rdsh(P98->startcyl);
+
+		FSImage=dskImage + 0x200 + (ssize*scyl*surf*sec);
+		readBootSector();
+		return true;
+
+	}
+
 	if (strncmp((char*)dskImage,"\353\376\220MSX_IDE ",11) != 0){
 		cout << "Not an idefdisk compitable 0 sector"<<endl;
 		return false;
@@ -1115,7 +1226,7 @@ while (!work.empty() ){
 		MSXDirSector=clusterToSector(rdsh(msxdirentry->startcluster));
 		MSXDirStartIndex=2;
 		totalpath+="/"+firstpart;
-		mkdir(totalpath.c_str(),ACCESSPERMS);
+		mkdir_ex(totalpath.c_str(),ACCESSPERMS);
 		}
 }
 return MSXDirSector;
@@ -1222,7 +1333,7 @@ void recurseDirExtract(const string &DirName,int sector,int direntryindex)
 {
 	int i=direntryindex;
 	do {
-		struct MSXDirEntry* direntry =(MSXDirEntry*)(FSImage+SECTOR_SIZE*sector+32*i);
+		struct MSXDirEntry* direntry =(MSXDirEntry*)((FSImage+SECTOR_SIZE*sector)+32*i);
 		if (direntry->filename[0] != 0xe5 && direntry->filename[0] != 0x00 ){
 			string filename=condensName(direntry);
 			string fullname=filename;
@@ -1234,7 +1345,7 @@ void recurseDirExtract(const string &DirName,int sector,int direntryindex)
 				fileExtract(fullname,direntry);
 			}
 			if (direntry->attrib == T_MSX_DIR){
-				mkdir(fullname.c_str(),ACCESSPERMS);
+				mkdir_ex(fullname.c_str(),ACCESSPERMS);
 				// now change the access time
 				changeTime(fullname,direntry);
 				recurseDirExtract(
@@ -1271,6 +1382,8 @@ void readDSK(const string fileName)
 	fsize = fst.st_size;
 
 	dskImage=(byte*)malloc(fsize);
+	sizeOfDskFile = fsize;
+
 	FSImage=dskImage;
 	if (dskImage == NULL){
 		CRITICAL_ERROR("Fatal error: Not enough memory to read image!");
@@ -1279,13 +1392,14 @@ void readDSK(const string fileName)
 	PRT_DEBUG("open file for reading : " << fileName );
 	FILE* file = fopen(fileName.c_str(),"rb");
 	if (file == NULL){
-		CRITICAL_ERROR("Couldn't open "<<fileName<<"for reading!");
+		CRITICAL_ERROR("Couldn't open "<<fileName<<" for reading!");
 	}
 	fread(dskImage,1,fsize,file);
 
 	//Assuming normal diskimage means reading bootsector
 	if (!msxpart_option){
-		if (strncmp((char*)dskImage,"\353\376\220MSX_IDE ",11) == 0){
+		if (strncmp((char*)dskImage,"T98HDDIMAGE.R0",14)==0 ||
+			 strncmp((char*)dskImage,"\353\376\220MSX_IDE ",11) == 0){
 			cout << "Please specify a partition to use!"<<endl;
 			exit(1);
 		}
@@ -1409,7 +1523,7 @@ Informative output:\n\
 }
 
 
-#define OPTION_STRING "12rAjzkmMcxf:xzwktzuS:v"
+#define OPTION_STRING "12rAP:jzkmMcxf:xzwktzuS:v"
 
 static struct option long_options[] =
 {
@@ -1535,11 +1649,19 @@ int main(int argc, char **argv)
  // default settings
  nbSectors = 1440; // asume a DS disk is used
  sectorsPerCluster=2; //set default value
+ sizeOfDskFile = 0;
+
 
   outputFile=string("diskimage.dsk");
 
   while (optchar = getopt_long (argc, argv, OPTION_STRING, long_options, 0),
 	 optchar != -1 && optchar != 1)
+{
+	char *optx;
+
+	optx=optarg;
+	if (optx && *optx=='=') optx++;
+
     switch (optchar)
       {
       case DEBUG_OPTION :
@@ -1560,7 +1682,7 @@ int main(int argc, char **argv)
       case 1:
 	/* File name or non-parsed option, because of RETURN_IN_ORDER
 	   ordering triggered by the leading dash in OPTION_STRING.  */
-	inputFile=string(optarg);
+	inputFile=string(optx);
 	break;
 
       case '1':
@@ -1578,7 +1700,7 @@ int main(int argc, char **argv)
 	break;
 
       case 'f':
-	outputFile=string(optarg);
+	outputFile=string(optx);
 	break;
 
       case 'j':
@@ -1596,16 +1718,16 @@ int main(int argc, char **argv)
 
       case 'M':
 	msxdir_option=true;
-	MSXhostdir=string(optarg);
+	MSXhostdir=string(optx);
 	break;
 
       case 'P':
 	msxpart_option=true;
-	if (strncasecmp(optarg,"all",3) == 0){
+	if (strncasecmp(optx,"all",3) == 0){
 		msx_allpart=true;
 		MSXpartition=0;
 	} else {
-		MSXpartition=strtol(optarg,&optarg,10);
+		MSXpartition=strtol(optx,&optx,10);
 	};
 	break;
 
@@ -1638,7 +1760,7 @@ int main(int argc, char **argv)
 	break;
 
       case 'S':
-        string imagesize=string(optarg);
+        string imagesize=string(optx);
 	if (strncasecmp(imagesize.c_str(),"single",6) == 0){
 		nbSectors = 720;
 	} else if (strncasecmp(imagesize.c_str(),"double",6) == 0){
@@ -1651,8 +1773,8 @@ int main(int argc, char **argv)
 		int size=0;
 		int scale=SECTOR_SIZE;
 
-		P=optarg;
-		size=strtol(optarg,&P,10);
+		P=optx;
+		size=strtol(optx,&P,10);
 		for (;*P != 0 ;P++);
 		P--;
 		cout << "Final letter" << *P << endl;
@@ -1683,6 +1805,7 @@ int main(int argc, char **argv)
 
       }
 	// end-of-copy
+}
 
   /* Process trivial options first.  */
 
@@ -1711,7 +1834,7 @@ see the file named COPYING for details.\n");
 	//cout << "final: "<<i<<endl;
 
 	if (argc < 2) {
-		cout << "Not enough arguments";
+		cout << "Not enough arguments" << endl;
 	} else {
 	  PRT_DEBUG("Testing switch coammnd");
 	  switch (maincommand)
@@ -1736,7 +1859,7 @@ see the file named COPYING for details.\n");
 		      char P[40];
 		      sprintf(P,"./PARTITION%02i",MSXpartition);
 		      string dirname=string(P);
-		      mkdir(dirname.c_str(),ACCESSPERMS);
+		      mkdir_ex(dirname.c_str(),ACCESSPERMS);
 		      recurseDirExtract(dirname,MSXchrootSector,MSXchrootStartIndex);
 		    }
 		    }
