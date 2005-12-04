@@ -152,6 +152,8 @@ struct physDirEntry
 	byte index;
 };
 
+#define NUMOFENT (SECTOR_SIZE/0x20) // number of entries in 1sector
+
 char* program_name;
 
 long sizeOfDskFile;
@@ -520,7 +522,7 @@ byte findUsableIndexInSector(int sector)
 	// find a not used (0x00) or delete entry (0xe5)
 	byte* P=FSImage+SECTOR_SIZE*sector;
 	byte i=0;
-	for (; i<16 && P[0]!=0x00 && P[0]!=0xe5; i++,P+=32);
+	for (; i<NUMOFENT && P[0]!=0x00 && P[0]!=0xe5; i++,P+=32);
 	return i;
 }
 
@@ -578,13 +580,13 @@ struct MSXDirEntry* findEntryInDir(string name,int sector,byte direntryindex)
 	byte* P=FSImage+SECTOR_SIZE*sector+32*direntryindex;
 	byte i=0;
 	do {
-		for (i=0; i<16 && strncmp(name.c_str(),(char*)P,11)!=0; i++,P+=32);
-		if (i==16){
+		for (i=0; i<NUMOFENT && strncmp(name.c_str(),(char*)P,11)!=0; i++,P+=32);
+		if (i==NUMOFENT){
 			sector=getNextSector(sector);
 			P=FSImage+SECTOR_SIZE*sector;
 			};
 		
-	} while (i>15 && sector);
+	} while (i>NUMOFENT-1 && sector);
 	return sector?(MSXDirEntry*)P:NULL ;
 }
 
@@ -600,19 +602,19 @@ struct physDirEntry addEntryToDir(int sector,byte direntryindex)
 	byte newindex=findUsableIndexInSector(sector);
 	if (sector<=RootDirEnd){
 		// we are adding this to the root sector
-		while (newindex>15 && sector<=RootDirEnd){
+		while (newindex>NUMOFENT-1 && sector<=RootDirEnd){
 			newindex=findUsableIndexInSector(++sector);
 		}
 		newEntry.sector=sector;
 		newEntry.index=newindex;
 	} else {
 		// we are adding this to a subdir
-		if  (newindex<16){
+		if  (newindex<NUMOFENT){
 			newEntry.sector=sector;
 			newEntry.index=newindex;
 		} else {
 			int nextsector;
-			while (newindex>15 && sector!=0 ){
+			while (newindex>NUMOFENT-1 && sector!=0 ){
 				nextsector=getNextSector(sector);
 				if (nextsector==0){
 					nextsector=appendClusterToSubdir(sector);
@@ -702,7 +704,7 @@ int AddMSXSubdir(string msxName,int t,int d,int sector,byte direntryindex)
 	// returns the sector for the first cluster of this subdir
 	struct physDirEntry result;
 	result=addEntryToDir(sector,direntryindex);
-	if (result.index > 15){
+	if (result.index > NUMOFENT-1){
 		cout << "couldn't add entry"<<msxName <<endl;
 		return 0;
 	}
@@ -878,7 +880,7 @@ int AddFiletoDSK(string hostName,string msxName,int sector,byte direntryindex)
 	};
 	struct physDirEntry result;
 	result=addEntryToDir(sector,direntryindex);
-	if (result.index > 15){
+	if (result.index > NUMOFENT-1){
 		cout << "couldn't add entry"<<hostName <<endl;
 		return 255;
 	}
@@ -1356,7 +1358,7 @@ void recurseDirExtract(const string &DirName,int sector,int direntryindex)
 		}
 		i++;
 		direntry++;
-		if (i == 16){
+		if (i == NUMOFENT){
 			if (sector<=RootDirEnd){
 				sector++;
 				if (sector>RootDirEnd){sector=0;}

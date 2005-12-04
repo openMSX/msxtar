@@ -1,5 +1,8 @@
 $Id$
 
+2005-12-05 BouKiCHi
+    * fixed number of entries in 1 sector to be calculated.
+
 2005-12-04 BouKiCHi
 	* added a recognizing T98Image HDD image.
 	* fixed msxtar breaks up IDE image.
