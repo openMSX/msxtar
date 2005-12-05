@@ -180,7 +180,8 @@ int MSXpartition=0;
 int globalargc;
 char** globalargv;
 int verbose_option=0;
-bool do_flat=false;
+bool do_test=false; // reserved the flag for test how don't want to write to disk actually.
+bool do_flat=false; // reserved the flag for MSX1ers who don't like to create subdirs.
 bool do_extract=false;
 bool do_subdirs=true;
 bool do_singlesided=false;
@@ -651,6 +652,10 @@ static char toMSXChr(char a)
 string makeSimpleMSXFileName(const string& fullfilename)
 {
 	unsigned pos = fullfilename.find_last_of('/');
+
+	if (pos == string::npos)
+		pos = fullfilename.find_last_of('\\'); // for DOS user :)
+
 	string tmp;
 	if (pos != string::npos) {
 		tmp = fullfilename.substr(pos + 1);
@@ -971,6 +976,10 @@ void recurseDirFill(const string &DirName,int sector,int direntryindex)
   */
 void writeImageToDisk(string filename)
 {
+		if (do_test) {
+			PRT_VERBOSE("msxtar doesn't write to disk for test");
+			return; // test is not to write.
+		}
 
 		FILE* file = fopen(filename.c_str(), "wb");
 		if (file) {
@@ -1072,10 +1081,20 @@ void addcreateDSK(const string fileName)
 	};
 }
 
-void updateInDSK(const string name)
+void updateInDSK(string name)
 {
+	// delete last charactor in the filename if it's a charactor to divide.
+
+	if (name.length() > 0) {
+		unsigned char ch = *(name.end()-1);
+		if (ch == '/' && ch == '\\') 
+			name.erase(name.length()-1);
+		// Erased last charactor because it's a kind of slash :)
+	}
+
 	//first find the filename in the current 'root dir'
 	struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(name),RootDirStart,0);
+
 	if (msxdirentry==NULL){
 		PRT_VERBOSE("Couldn't find entry "<<name<<" to update, trying to create new entry");
 		addcreateDSK(name);

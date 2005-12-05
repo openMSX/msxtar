@@ -2,6 +2,9 @@ $Id$
 
 2005-12-05 BouKiCHi
     * fixed number of entries in 1 sector to be calculated.
+	* supported backslash in filename of arguments for DOS users.
+	* improved to erase last charactor if it's a kind of slash.
+
 
 2005-12-04 BouKiCHi
 	* added a recognizing T98Image HDD image.
