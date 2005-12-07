@@ -21,6 +21,8 @@
 
 //#include <stdio.h>
 #include <iostream>
+#include <iomanip>
+
 //#include <iostream.h>
 #include <string>
 #include <sstream>
@@ -28,6 +30,7 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <utime.h>
 #include <unistd.h>
 #include <getopt.h>
@@ -457,10 +460,10 @@ void setBootSector(word nbSectors)
   */
 word ReadFAT(word clnr)
 {
-	PRT_DEBUG("ReadFAT(cnlr= "<<clnr<<");");
+//	PRT_DEBUG("ReadFAT(cnlr= "<<clnr<<");");
 	if (!do_fat16){
 		byte *P = FSImage+SECTOR_SIZE + (clnr * 3) / 2;
-		PRT_DEBUG("returning "<< ( (clnr & 1) ?  (P[0] >> 4) + (P[1] << 4) : P[0] + ((P[1] & 0x0F) << 8)) );
+//		PRT_DEBUG("returning "<< ( (clnr & 1) ?  (P[0] >> 4) + (P[1] << 4) : P[0] + ((P[1] & 0x0F) << 8)) );
 		return (clnr & 1) ?
 		(P[0] >> 4) + (P[1] << 4) :
 		P[0] + ((P[1] & 0x0F) << 8);
@@ -753,6 +756,17 @@ int AddMSXSubdir(string msxName,int t,int d,int sector,byte direntryindex)
 
 	return logicalSector;
 }
+
+void makeFATTime(const struct tm mtim,int *dt)
+{
+	dt[0] = (mtim.tm_sec >> 1) + (mtim.tm_min << 5) +
+		(mtim.tm_hour << 11);
+	dt[1] = mtim.tm_mday + ((mtim.tm_mon + 1) << 5) +
+	    ((mtim.tm_year + 1900 - 1980) << 9);
+}
+
+
+
 /** Add an MSXsubdir with the time properties from the HOST-OS subdir
  */
 int AddSubdirtoDSK(string hostName,string msxName,int sector,byte direntryindex)
@@ -764,12 +778,12 @@ int AddSubdirtoDSK(string hostName,string msxName,int sector,byte direntryindex)
 	memset(&fst, 0, sizeof(struct stat));
 	stat(hostName.c_str(), &fst);
 	struct tm mtim = *localtime(&(fst.st_mtime));
-	int t = (mtim.tm_sec >> 1) + (mtim.tm_min << 5) +
-		(mtim.tm_hour << 11);
-	int d = mtim.tm_mday + ((mtim.tm_mon + 1) << 5) +
-	    ((mtim.tm_year + 1900 - 1980) << 9);
 
-	int logicalSector=AddMSXSubdir(msxName,t,d,sector,direntryindex);
+	int td[2];
+
+	makeFATTime(mtim,td);
+
+	int logicalSector=AddMSXSubdir(msxName,td[0],td[1],sector,direntryindex);
 	return logicalSector;
 }
 
@@ -902,12 +916,11 @@ int AddFiletoDSK(string hostName,string msxName,int sector,byte direntryindex)
 	memset(&fst, 0, sizeof(struct stat));
 	stat(hostName.c_str(), &fst);
 	struct tm mtim = *localtime(&(fst.st_mtime));
-	int t = (mtim.tm_sec >> 1) + (mtim.tm_min << 5) +
-		(mtim.tm_hour << 11);
-	setsh(direntry->time, t);
-	t = mtim.tm_mday + ((mtim.tm_mon + 1) << 5) +
-	    ((mtim.tm_year + 1900 - 1980) << 9);
-	setsh(direntry->date, t);
+	int td[2];
+
+	makeFATTime(mtim,td);
+	setsh(direntry->time, td[0]);
+	setsh(direntry->date, td[1]);
 
 	AlterFileInDSK(direntry,hostName);
 }
@@ -944,7 +957,7 @@ void recurseDirFill(const string &DirName,int sector,int direntryindex)
 	while (d) {
 		string name(d->d_name);
 		PRT_DEBUG("reading name in dir :" << name);
-		if ( check_stat(name) ) { // true if a file
+		if ( check_stat(DirName + '/' + name) ) { // true if a file
 			if (!name.empty() && name[0] != '.')
 					result=AddFiletoDSK(DirName + '/' + name,name,sector,direntryindex); // used here to add file into fake dsk
 			else
@@ -1286,13 +1299,11 @@ while (!work.empty() ){
 		time_t now;
 		time( &now );
 		struct tm mtim = *localtime(&now);
-		int t = (mtim.tm_sec >> 1) + (mtim.tm_min << 5) +
-			(mtim.tm_hour << 11);
-		int d = mtim.tm_mday + ((mtim.tm_mon + 1) << 5) +
-			((mtim.tm_year + 1900 - 1980) << 9);
+		int td[2];
+		makeFATTime(mtim,td);
 
 		cout <<"Create subdir "<< endl;
-		MSXchrootSector=AddMSXSubdir(simple,t,d,MSXchrootSector,MSXchrootStartIndex);
+		MSXchrootSector=AddMSXSubdir(simple,td[0],td[1],MSXchrootSector,MSXchrootStartIndex);
 		MSXchrootStartIndex=2;
 		if (MSXchrootSector == 0){exit(0);};
 	} else {
@@ -1302,6 +1313,19 @@ while (!work.empty() ){
 }
 
 }
+
+
+void makeTimeFromDE(struct tm *ptm,int *td)
+{
+	ptm->tm_sec=( td[0] & 0x1f ) << 1 ;
+	ptm->tm_min= ( td[0] & 0x03e0) >> 5;
+	ptm->tm_hour= ( td[0] & 0xf800) >> 11;
+	ptm->tm_mday= ( td[1] & 0x1f);
+	ptm->tm_mon= ( td[1] & 0x01e0) >> 5;
+	ptm->tm_year= (( td[1] & 0xfe00) >> 9) + 80;
+
+}
+
 /** Set the entries from direntry to the timestamp of resultFile
   */
 void changeTime(string resultFile,struct MSXDirEntry* direntry)
@@ -1309,16 +1333,16 @@ void changeTime(string resultFile,struct MSXDirEntry* direntry)
 	if (touch_option){
 		return;
 	};
-	int t=rdsh(direntry->time);
-	int d=rdsh(direntry->date);
+	int td[2];
+
+	td[0]=rdsh(direntry->time);
+	td[1]=rdsh(direntry->date);
+
 	struct tm mtim;
 	struct utimbuf utim;
-	mtim.tm_sec=( t & 0x1f ) << 1 ;
-	mtim.tm_min= ( t & 0x03e0) >> 5;
-	mtim.tm_hour= ( t & 0xf800) >> 11;
-	mtim.tm_mday= ( d & 0x1f);
-	mtim.tm_mon= ( d & 0x01e0) >> 5;
-	mtim.tm_year= (( d & 0xfe00) >> 9) + 80;
+
+	makeTimeFromDE(&mtim,td);
+
 	utim.actime=mktime(&mtim);
 	utim.modtime=mktime(&mtim);
 	utime(resultFile.c_str(), &utim);
@@ -1352,6 +1376,11 @@ void fileExtract(string resultFile,struct MSXDirEntry* direntry)
 
 void recurseDirExtract(const string &DirName,int sector,int direntryindex)
 {
+	int td[2];
+	tm mtim;
+	char os_buf[256];
+	char ts_buf[32];
+
 	int i=direntryindex;
 	do {
 		struct MSXDirEntry* direntry =(MSXDirEntry*)((FSImage+SECTOR_SIZE*sector)+32*i);
@@ -1361,7 +1390,23 @@ void recurseDirExtract(const string &DirName,int sector,int direntryindex)
 			if (! DirName.empty()){
 			  fullname=DirName+"/"+filename;
 			}
-			PRT_VERBOSE(fullname);
+			td[0]=rdsh(direntry->time);
+			td[1]=rdsh(direntry->date);
+
+			makeTimeFromDE(&mtim,td);
+
+			sprintf(ts_buf,"%04d/%02d/%02d %02d:%02d:%02d",
+				mtim.tm_year+1900,mtim.tm_mon,mtim.tm_mday,
+				mtim.tm_hour,mtim.tm_min,mtim.tm_sec);
+
+			if (direntry->attrib & T_MSX_DIR)
+					sprintf(os_buf,"%-32s %s %12s",fullname.c_str(),ts_buf,"<dir>");
+			else
+					sprintf(os_buf,"%-32s %s %12ld",fullname.c_str(),ts_buf,rdlg(direntry->size));
+
+			PRT_VERBOSE(os_buf);
+
+
 			if (do_extract && direntry->attrib != T_MSX_DIR){
 				fileExtract(fullname,direntry);
 			}
