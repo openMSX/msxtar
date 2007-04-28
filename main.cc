@@ -654,7 +654,7 @@ static char toMSXChr(char a)
  */
 string makeSimpleMSXFileName(const string& fullfilename)
 {
-	unsigned pos = fullfilename.find_last_of('/');
+	string::size_type pos = fullfilename.find_last_of('/');
 
 	if (pos == string::npos)
 		pos = fullfilename.find_last_of('\\'); // for DOS user :)
