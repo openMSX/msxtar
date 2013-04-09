@@ -19,14 +19,11 @@
    59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-//#include <stdio.h>
+#include <algorithm>
 #include <iostream>
 #include <iomanip>
-
-//#include <iostream.h>
 #include <string>
 #include <sstream>
-//#include <strings.h>
 #include <sys/types.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -34,6 +31,10 @@
 #include <utime.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <climits>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 using std::string;
 using std::cout;
@@ -792,7 +793,7 @@ int AddSubdirtoDSK(string hostName,string msxName,int sector,byte direntryindex)
   * It doesn't changes timestamps nor filename, filetype etc.
   * Output: nothing usefull yet
   */
-int AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
+void AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 {
 	bool needsNew=false;
 	int fsize;
@@ -889,19 +890,19 @@ int AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 /** Add file to the MSX disk in the subdir pointed to by 'sector'
   * returns: nothing usefull yet :-)
   */
-int AddFiletoDSK(string hostName,string msxName,int sector,byte direntryindex)
+void AddFiletoDSK(string hostName,string msxName,int sector,byte direntryindex)
 {
 	//first find out if the filename already exists current dir
 	struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(msxName),sector,direntryindex); 
 	if (msxdirentry!=NULL){
 	  PRT_VERBOSE("Preserving entry "<<msxName );
-	  return 0;
+	  return;
 	};
 	struct physDirEntry result;
 	result=addEntryToDir(sector,direntryindex);
 	if (result.index > NUMOFENT-1){
 		cout << "couldn't add entry"<<hostName <<endl;
-		return 255;
+		return;
 	}
 	struct MSXDirEntry* direntry =(MSXDirEntry*)(FSImage+SECTOR_SIZE*result.sector+32*result.index);
 	direntry->attrib=T_MSX_REG;
@@ -959,7 +960,7 @@ void recurseDirFill(const string &DirName,int sector,int direntryindex)
 		PRT_DEBUG("reading name in dir :" << name);
 		if ( check_stat(DirName + '/' + name) ) { // true if a file
 			if (!name.empty() && name[0] != '.')
-					result=AddFiletoDSK(DirName + '/' + name,name,sector,direntryindex); // used here to add file into fake dsk
+					AddFiletoDSK(DirName + '/' + name,name,sector,direntryindex); // used here to add file into fake dsk
 			else
 					cout << name << ": ignored file which first charactor is \".\"" << endl;
 		}
@@ -1040,7 +1041,7 @@ void updatecreateDSK(const string fileName)
 	} else {
 		// this should be a normal file
 		PRT_VERBOSE("Updating file "<<fileName);
-		//int result=AddFiletoDSK(fileName,fileName,MSXchrootSector,MSXchrootStartIndex); // used here to add file into fake dsk in rootdir!!
+		//AddFiletoDSK(fileName,fileName,MSXchrootSector,MSXchrootStartIndex); // used here to add file into fake dsk in rootdir!!
 		//first find out if the filename already exists current dir
 		struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(fileName),MSXchrootSector,MSXchrootStartIndex);
 		AlterFileInDSK(msxdirentry,fileName);
@@ -1090,7 +1091,7 @@ void addcreateDSK(const string fileName)
 		// this should be a normal file
 	  PRT_DEBUG("addcreateDSK: Adding file "<<fileName);
 	  PRT_VERBOSE("Adding file "<<fileName);
-	  int result=AddFiletoDSK(fileName,fileName,MSXchrootSector,MSXchrootStartIndex); // used here to add file into fake dsk in rootdir!!
+	  AddFiletoDSK(fileName,fileName,MSXchrootSector,MSXchrootStartIndex); // used here to add file into fake dsk in rootdir!!
 	};
 }
 
@@ -1229,7 +1230,6 @@ int findStartSectorOfDir(string dirname)
 {
 string work=dirname;
 string totalpath=string(".");
-unsigned pos = 0;
 int MSXDirSector=MSXchrootSector;
 int MSXDirStartIndex=MSXchrootStartIndex;
 //if (!msxdir_option){return;};
@@ -1241,8 +1241,7 @@ while (!work.empty() ){
 		//cout <<"chroot 1: work=" <<work <<endl;
 	}
 	string firstpart;
-	int pos;
-	pos= work.find_first_of("/\\");
+	string::size_type pos = work.find_first_of("/\\");
 	if ( pos != string::npos){
 		firstpart=work.substr(0,pos);
 		work=work.substr(pos + 1);
@@ -1271,7 +1270,6 @@ return MSXDirSector;
 void chroot()
 {
 string work=MSXhostdir;
-unsigned pos = 0;
 
 //if (!msxdir_option){return;};
 while (!work.empty() ){
@@ -1282,8 +1280,7 @@ while (!work.empty() ){
 		cout <<"chroot 1: work=" <<work <<endl;
 	}
 	string firstpart;
-	int pos;
-	pos= work.find_first_of('/');
+	string::size_type pos = work.find_first_of('/');
 	if ( pos != string::npos){
 		firstpart=work.substr(0,pos);
 		work=work.substr(pos + 1);
@@ -1402,7 +1399,7 @@ void recurseDirExtract(const string &DirName,int sector,int direntryindex)
 			if (direntry->attrib & T_MSX_DIR)
 					sprintf(os_buf,"%-32s %s %12s",fullname.c_str(),ts_buf,"<dir>");
 			else
-					sprintf(os_buf,"%-32s %s %12ld",fullname.c_str(),ts_buf,rdlg(direntry->size));
+					sprintf(os_buf,"%-32s %s %12d",fullname.c_str(),ts_buf,rdlg(direntry->size));
 
 			PRT_VERBOSE(os_buf);
 
@@ -1487,7 +1484,7 @@ void doSpecifiedExtraction(void)
     int MSXDirSector=MSXchrootSector;
     int MSXDirStartIndex=MSXchrootStartIndex;
     //now resolv directory if needed
-    int pos=work.find_last_of("/\\");
+    string::size_type pos = work.find_last_of("/\\");
     if ( pos != string::npos){
       string firstpart=work.substr(0,pos);
       work=work.substr(pos + 1);
@@ -1711,7 +1708,7 @@ int main(int argc, char **argv)
  };
 
  int maincommand=LIST_COMMAND;
- char optchar;
+ int optchar;
  // default settings
  nbSectors = 1440; // asume a DS disk is used
  sectorsPerCluster=2; //set default value
@@ -1895,7 +1892,7 @@ see the file named COPYING for details.\n");
 	EOF_FAT=0xffff;
   }
 
-	int i=0;
+	//int i=0;
 	//for (; i<16 && i!=5 ;i++){cout <<"count: "<<i<<endl;};
 	//cout << "final: "<<i<<endl;
 
