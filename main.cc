@@ -285,7 +285,7 @@ byte *DefaultBootBlock=Dos2BootBlock;
 
 /* functions to change DirEntries */
 /* #define setsh(x,y) {x[0]=y;x[1]=y>>8;} */
-void setsh(byte* x,int y) 
+void setsh(byte* x,int y)
 {
 	x[0]=(byte)(y & 255);
 	x[1]=(byte)((y>>8)&255);
@@ -348,7 +348,7 @@ void readBootSector()
 
 	RootDirEnd=RootDirStart+nbRootDirSectors-1;
 	maxCluster=sectorToCluster(nbSectors);
-	
+
 	if (show_bootinfo){
 		cout <<"---------- Boot sector info -----"<<endl<<endl;
 		cout <<"  bytes per sector:      "<< rdsh(boot->bpsector) <<endl;
@@ -482,7 +482,7 @@ void WriteFAT(word clnr, word val)
 	if (!do_fat16){
 		PRT_DEBUG("WriteFAT(cnlr= "<<clnr<<",val= "<<val<<");");
 		byte* P=FSImage+SECTOR_SIZE + (clnr * 3) / 2;
-		if (clnr & 1) { 
+		if (clnr & 1) {
 			P[0] = (P[0] & 0x0F) + (val << 4);
 			P[1] = val >> 4;
 		} else {
@@ -590,7 +590,7 @@ struct MSXDirEntry* findEntryInDir(string name,int sector,byte direntryindex)
 			sector=getNextSector(sector);
 			P=FSImage+SECTOR_SIZE*sector;
 			};
-		
+
 	} while (i>NUMOFENT-1 && sector);
 	return sector?(MSXDirEntry*)P:NULL ;
 }
@@ -600,7 +600,7 @@ struct MSXDirEntry* findEntryInDir(string name,int sector,byte direntryindex)
   * returns: a struct physDirEntry containing sector and index
   *          if failed then the sectornumber is 0
   */
-struct physDirEntry addEntryToDir(int sector,byte direntryindex)
+physDirEntry addEntryToDir(int sector)
 {
 	//this routin adds the msxname to a directory sector, if needed (and possible) the directory is extened with an extra cluster
 	struct physDirEntry newEntry;
@@ -708,11 +708,10 @@ string makeSimpleMSXFileName(const string& fullfilename)
   * returns: the first sector of the new subdir
   *          0 in case no directory could be created
   */
-int AddMSXSubdir(string msxName,int t,int d,int sector,byte direntryindex)
+int addMSXSubdir(const std::string& msxName, int t, int d, int sector)
 {
 	// returns the sector for the first cluster of this subdir
-	struct physDirEntry result;
-	result=addEntryToDir(sector,direntryindex);
+	physDirEntry result = addEntryToDir(sector);
 	if (result.index > NUMOFENT-1){
 		cout << "couldn't add entry"<<msxName <<endl;
 		return 0;
@@ -736,7 +735,7 @@ int AddMSXSubdir(string msxName,int t,int d,int sector,byte direntryindex)
 	direntry =(MSXDirEntry*)(FSImage+SECTOR_SIZE*logicalSector);
 	memset(direntry, 0, sizeof(struct MSXDirEntry));
 	memset(direntry, 0x20, 11); //all spaces
-	memset(direntry, '.', 1); 
+	memset(direntry, '.', 1);
 	direntry->attrib=T_MSX_DIR;
 	setsh(direntry->time, t);
 	setsh(direntry->date, d);
@@ -745,7 +744,7 @@ int AddMSXSubdir(string msxName,int t,int d,int sector,byte direntryindex)
 	direntry++;
 	memset(direntry, 0, sizeof(struct MSXDirEntry));
 	memset(direntry, 0x20, 11); //all spaces
-	memset(direntry, '.', 2); 
+	memset(direntry, '.', 2);
 	direntry->attrib=T_MSX_DIR;
 	setsh(direntry->time, t);
 	setsh(direntry->date, d);
@@ -770,7 +769,7 @@ void makeFATTime(const struct tm mtim,int *dt)
 
 /** Add an MSXsubdir with the time properties from the HOST-OS subdir
  */
-int AddSubdirtoDSK(string hostName,string msxName,int sector,byte direntryindex)
+int addSubdirtoDSK(const std::string& hostName, const std::string& msxName, int sector)
 {
 	//struct MSXDirEntry* direntry =(MSXDirEntry*)(FSImage+SECTOR_SIZE*result.sector+32*result.index);
 
@@ -784,8 +783,7 @@ int AddSubdirtoDSK(string hostName,string msxName,int sector,byte direntryindex)
 
 	makeFATTime(mtim,td);
 
-	int logicalSector=AddMSXSubdir(msxName,td[0],td[1],sector,direntryindex);
-	return logicalSector;
+	return addMSXSubdir(msxName, td[0], td[1], sector);
 }
 
 /** This file alters the filecontent of agiven file
@@ -809,7 +807,7 @@ void AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 	if (curcl==0){
 		curcl=findFirstFreeCluster();
 		setsh(msxdirentry->startcluster, curcl);
-		WriteFAT(curcl, EOF_FAT); 
+		WriteFAT(curcl, EOF_FAT);
 		needsNew=true;
 	}
 	PRT_DEBUG("AlterFileInDSK: Starting at cluster " << curcl );
@@ -822,15 +820,14 @@ void AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 	while (file && size && (curcl <= maxCluster)) {
 		int logicalSector= clusterToSector(curcl);
 		byte* buf=FSImage+logicalSector*SECTOR_SIZE;
-		for (int j=0 ; j < sectorsPerCluster ; j++){
-			if (size){
-				PRT_DEBUG("AlterFileInDSK: relative sector "<<j<<" in cluster "<<curcl);
-				// more poitical correct:
-				//We should read 'size'-bytes instead of 'SECTOR_SIZE' if it is the end of the file
-				fread(buf,1,SECTOR_SIZE,file);
-				buf+=SECTOR_SIZE;
+		for (int j = 0; (j < sectorsPerCluster) && size; ++j) {
+			PRT_DEBUG("AlterFileInDSK: relative sector " << j << " in cluster " << curcl);
+			size_t chunkSize = std::min(size, SECTOR_SIZE);
+			if (fread(buf, 1, chunkSize, file) != chunkSize) {
+				CRITICAL_ERROR("Error while reading from " << hostName);
 			}
-			size -= (size > SECTOR_SIZE  ? SECTOR_SIZE  : size);
+			buf += SECTOR_SIZE;
+			size -= chunkSize;
 		}
 
 		if (prevcl) {
@@ -841,7 +838,7 @@ void AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 		//do {
 		if (needsNew){
 			//need extra space for this file
-			WriteFAT(curcl, EOF_FAT); 
+			WriteFAT(curcl, EOF_FAT);
 			curcl=findFirstFreeCluster();
 		} else {
 			// follow cluster-Fat-stream
@@ -862,7 +859,7 @@ void AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 			prevcl=curcl;
 			curcl=ReadFAT(curcl);
 		};
-		WriteFAT(prevcl, EOF_FAT); 
+		WriteFAT(prevcl, EOF_FAT);
 		PRT_DEBUG("AlterFileInDSK: Ending at cluster " << prevcl);
 		//cleaning rest of FAT chain if needed
 		while (!needsNew){
@@ -875,7 +872,7 @@ void AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 			PRT_DEBUG("AlterFileInDSK: Cleaning cluster " << prevcl << " from FAT");
 			WriteFAT(prevcl, 0);
 		}
-		
+
 	} else {
 		//TODO: don't we need a EOF_FAT in this case as well ?
 		// find out and adjust code here
@@ -893,13 +890,12 @@ void AlterFileInDSK(struct MSXDirEntry* msxdirentry, string hostName)
 void AddFiletoDSK(string hostName,string msxName,int sector,byte direntryindex)
 {
 	//first find out if the filename already exists current dir
-	struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(msxName),sector,direntryindex); 
+	struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(msxName),sector,direntryindex);
 	if (msxdirentry!=NULL){
 	  PRT_VERBOSE("Preserving entry "<<msxName );
 	  return;
 	};
-	struct physDirEntry result;
-	result=addEntryToDir(sector,direntryindex);
+	physDirEntry result = addEntryToDir(sector);
 	if (result.index > NUMOFENT-1){
 		cout << "couldn't add entry"<<hostName <<endl;
 		return;
@@ -967,13 +963,13 @@ void recurseDirFill(const string &DirName,int sector,int direntryindex)
 		else if (name != string(".") && name != string("..") ) {
 			if (do_subdirs){
 			PRT_VERBOSE(DirName + '/' + name<<" \t-> \""<<makeSimpleMSXFileName(name) << '"' );
-			struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(name),sector,direntryindex); 
+			struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(name),sector,direntryindex);
 			if (msxdirentry!=NULL){
 			  PRT_VERBOSE("Dir entry "<<name <<" exists already ");
 			  result= clusterToSector(rdsh(msxdirentry->startcluster));
 			} else {
 			  PRT_VERBOSE("Adding dir entry "<<name);
-			result=AddSubdirtoDSK(DirName + '/' + name,name,sector,direntryindex); // used here to add file into fake dsk
+			result = addSubdirtoDSK(DirName + '/' + name, name, sector); // used here to add file into fake dsk
 			}
 
 			recurseDirFill( DirName + '/' + name ,result,0);
@@ -1024,14 +1020,14 @@ void updatecreateDSK(const string fileName)
 		} else {
 			PRT_VERBOSE("./" + fileName<<" \t-> \""<<makeSimpleMSXFileName(fileName) << '"' );
 			struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(fileName),
-							MSXchrootSector,MSXchrootStartIndex); 
+							MSXchrootSector,MSXchrootStartIndex);
 
 			if (msxdirentry!=NULL){
 			  PRT_VERBOSE("Dir entry "<<fileName <<" exists already ");
 			  result= clusterToSector(rdsh(msxdirentry->startcluster));
 			} else {
 			  PRT_VERBOSE("Adding dir entry "<<fileName);
-			result=AddSubdirtoDSK(fileName,fileName,MSXchrootSector,MSXchrootStartIndex);
+			result = addSubdirtoDSK(fileName, fileName, MSXchrootSector);
 				 // used here to add file into fake dsk
 			}
 
@@ -1075,14 +1071,14 @@ void addcreateDSK(const string fileName)
 
 			PRT_VERBOSE("./" + fileName<<" \t-> \""<<makeSimpleMSXFileName(fileName) << '"' );
 			struct MSXDirEntry* msxdirentry=findEntryInDir(makeSimpleMSXFileName(fileName),
-							MSXchrootSector,MSXchrootStartIndex); 
+							MSXchrootSector,MSXchrootStartIndex);
 
 			if (msxdirentry!=NULL){
 			  PRT_VERBOSE("Dir entry "<<fileName <<" exists already ");
 			  result= clusterToSector(rdsh(msxdirentry->startcluster));
 			} else {
 			  PRT_VERBOSE("Adding dir entry "<<fileName);
-			result=AddSubdirtoDSK(fileName,fileName,MSXchrootSector,MSXchrootStartIndex);
+			result = addSubdirtoDSK(fileName, fileName, MSXchrootSector);
 				 // used here to add file into fake dsk
 			}
 			recurseDirFill( fileName ,result,0);
@@ -1101,7 +1097,7 @@ void updateInDSK(string name)
 
 	if (name.length() > 0) {
 		unsigned char ch = *(name.end()-1);
-		if (ch == '/' && ch == '\\') 
+		if (ch == '/' && ch == '\\')
 			name.erase(name.length()-1);
 		// Erased last charactor because it's a kind of slash :)
 	}
@@ -1249,7 +1245,7 @@ while (!work.empty() ){
 		firstpart=work;
 		work.clear();
 	};
-	// find firstpart directory 
+	// find firstpart directory
 	string simple=makeSimpleMSXFileName(firstpart);
 	struct MSXDirEntry* msxdirentry=findEntryInDir(simple,MSXDirSector,MSXDirStartIndex);
 	if (msxdirentry == NULL){
@@ -1300,7 +1296,7 @@ while (!work.empty() ){
 		makeFATTime(mtim,td);
 
 		cout <<"Create subdir "<< endl;
-		MSXchrootSector=AddMSXSubdir(simple,td[0],td[1],MSXchrootSector,MSXchrootStartIndex);
+		MSXchrootSector = addMSXSubdir(simple, td[0], td[1], MSXchrootSector);
 		MSXchrootStartIndex=2;
 		if (MSXchrootSector == 0){exit(0);};
 	} else {
@@ -1436,13 +1432,12 @@ void readDSK(const string fileName)
 {
 	// First read the diskimage into memory
 
-	int fsize;
 	struct stat fst;
 	memset(&fst, 0, sizeof(struct stat));
 
 	PRT_DEBUG("trying to stat : " << fileName );
 	stat(fileName.c_str(), &fst);
-	fsize = fst.st_size;
+	size_t fsize = fst.st_size;
 
 	dskImage=(byte*)malloc(fsize);
 	sizeOfDskFile = fsize;
@@ -1457,7 +1452,9 @@ void readDSK(const string fileName)
 	if (file == NULL){
 		CRITICAL_ERROR("Couldn't open "<<fileName<<" for reading!");
 	}
-	fread(dskImage,1,fsize,file);
+	if (fread(dskImage, 1, fsize, file) != fsize) {
+		CRITICAL_ERROR("Error while reading from " << fileName);
+	}
 
 	//Assuming normal diskimage means reading bootsector
 	if (!msxpart_option){
@@ -1939,6 +1936,7 @@ see the file named COPYING for details.\n");
 	      break;
 	    case APPEND_COMMAND:
 		keep_option=true;
+		[[fallthrough]];
 	    case UPDATE_COMMAND:
 		readDSK(outputFile);
 		if (msxpart_option){
