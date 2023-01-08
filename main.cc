@@ -113,7 +113,8 @@ struct PC98Part {
 
 uint16_t EOF_FAT = 0x0FFF; // signals EOF in FAT12
 
-int SECTOR_SIZE = 512;
+static constexpr int SECTOR_SIZE = 512;
+static constexpr int NUM_OF_ENT = SECTOR_SIZE / 0x20; // number of entries per sector
 
 static constexpr uint8_t T_MSX_REG  = 0x00; // Normal file
 static constexpr uint8_t T_MSX_READ = 0x01; // Read-Only file
@@ -128,7 +129,6 @@ struct PhysDirEntry {
 	uint8_t index;
 };
 
-#define NUM_OF_ENT (SECTOR_SIZE / 0x20) // number of entries in 1sector
 
 char* programName;
 
@@ -277,7 +277,6 @@ void readBootSector()
 	const auto* boot = reinterpret_cast<const MSXBootSector*>(fsImage);
 
 	nbSectors = boot->nrSectors; // assume a DS disk is used
-	SECTOR_SIZE = boot->bpSector;
 	sectorsPerTrack = boot->sectorsTrack;
 	nbSides = boot->nrSides;
 	nbFats = boot->nrFats;
@@ -1079,8 +1078,6 @@ bool chPart(int chPartition)
 		int surf = getLE16(dskImage + 0x110 + 8);
 		int sec = getLE16(dskImage + 0x110 + 10);
 		int sSize = getLE16(dskImage + 0x110 + 12);
-
-		SECTOR_SIZE = sSize;
 
 		const auto* p98 = reinterpret_cast<const PC98Part*>(
 			dskImage + 0x400 + (chPartition * 16));
