@@ -152,7 +152,6 @@ bool msxPartOption = false;
 static int showVersion = 0;  // If nonzero, display version information and exit
 static int showHelp = 0;     // If nonzero, display usage information and exit
 static int showDebug = 0;    // If nonzero, display debug information while running
-static int showBootInfo = 0; // If nonzero, display debug information while running
 
 enum { DEBUG_OPTION = CHAR_MAX + 1, OTHER_OPTION };
 
@@ -269,27 +268,25 @@ void readBootSector()
 	rootDirEnd = rootDirStart + nbRootDirSectors - 1;
 	maxCluster = sectorToCluster(nbSectors);
 
-	if (showBootInfo) {
-		std::cout << "---------- Boot sector info -----\n"
-		             "\n"
-		             "  bytes per sector:      " << boot->bpSector << "\n"
-		             "  sectors per cluster:   " << int(boot->spCluster) << "\n"
-		             "  number of FAT's:       " << int(boot->nrFats) << "\n"
-		             "  dirEntries in rootDir: " << boot->dirEntries << "\n"
-		             "  sectors on disk:       " << boot->nrSectors << "\n"
-		             "  media descriptor:      " << std::hex << int(boot->descriptor) << std::dec << "\n"
-		             "  sectors per FAT:       " << boot->sectorsFat << "\n"
-		             "  sectors per track:     " << boot->sectorsTrack << "\n"
-		             "  number of sides:       " << boot->nrSides << "\n"
-		             "\n"
-		             "Calculated values\n"
-		             "\n"
-		             "maxCluster   " << maxCluster << "\n"
-		             "RootDirStart " << rootDirStart << "\n"
-		             "RootDirEnd   " << rootDirEnd << "\n"
-		             "---------------------------------\n"
-		             "\n";
-	}
+	PRT_DEBUG("---------- Boot sector info -----\n"
+	          "\n"
+	          "  bytes per sector:      " << boot->bpSector << "\n"
+	          "  sectors per cluster:   " << int(boot->spCluster) << "\n"
+	          "  number of FAT's:       " << int(boot->nrFats) << "\n"
+	          "  dirEntries in rootDir: " << boot->dirEntries << "\n"
+	          "  sectors on disk:       " << boot->nrSectors << "\n"
+	          "  media descriptor:      " << std::hex << int(boot->descriptor) << std::dec << "\n"
+	          "  sectors per FAT:       " << boot->sectorsFat << "\n"
+	          "  sectors per track:     " << boot->sectorsTrack << "\n"
+	          "  number of sides:       " << boot->nrSides << "\n"
+	          "\n"
+	          "Calculated values\n"
+	          "\n"
+	          "maxCluster   " << maxCluster << "\n"
+	          "RootDirStart " << rootDirStart << "\n"
+	          "RootDirEnd   " << rootDirEnd << "\n"
+	          "---------------------------------\n"
+	          "\n");
 }
 
 /** Create a correct boot sector depending on the required size of the filesystem
@@ -1402,7 +1399,6 @@ static struct option long_options[] = {
         {"verbose",           no_argument,       nullptr,       'v'},
         {"version",           no_argument,       &showVersion,   1 },
         {"debug",             no_argument,       nullptr, DEBUG_OPTION},
-        {"bootinfo",          no_argument,       &showBootInfo,  1 },
         {nullptr, 0, nullptr, 0},
 };
 
