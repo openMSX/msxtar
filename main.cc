@@ -153,7 +153,6 @@ static int showVersion = 0;  // If nonzero, display version information and exit
 static int showHelp = 0;     // If nonzero, display usage information and exit
 static int showDebug = 0;    // If nonzero, display debug information while running
 static int showBootInfo = 0; // If nonzero, display debug information while running
-static int doFat16 = 0;      // Force FAT16 support, ide >32M automatically sets this
 
 enum { DEBUG_OPTION = CHAR_MAX + 1, OTHER_OPTION };
 
@@ -384,34 +383,21 @@ void setBootSector(uint16_t nbSectors)
 // Get the next cluster number from the FAT chain
 uint16_t readFAT(uint16_t clNr)
 {
-	if (!doFat16) {
-		const uint8_t* p = fsImage + SECTOR_SIZE + (clNr * 3) / 2;
-		return (clNr & 1) ? (p[0] >> 4) + (p[1] << 4)
-		                  : p[0] + ((p[1] & 0x0F) << 8);
-	} else {
-		std::cout << "FAT size 16 not yet tested!!\n";
-		const uint8_t* p = fsImage + SECTOR_SIZE + (clNr * 2);
-		return p[0] + (p[1] << 8);
-	}
+	const uint8_t* p = fsImage + SECTOR_SIZE + (clNr * 3) / 2;
+	return (clNr & 1) ? (p[0] >> 4) + (p[1] << 4)
+	                  : p[0] + ((p[1] & 0x0F) << 8);
 }
 
 // Write an entry to the FAT
 void writeFAT(uint16_t clNr, uint16_t val)
 {
-	if (!doFat16) {
-		uint8_t* p = fsImage + SECTOR_SIZE + (clNr * 3) / 2;
-		if (clNr & 1) {
-			p[0] = (p[0] & 0x0F) + (val << 4);
-			p[1] = val >> 4;
-		} else {
-			p[0] = val;
-			p[1] = (p[1] & 0xF0) + ((val >> 8) & 0x0F);
-		}
+	uint8_t* p = fsImage + SECTOR_SIZE + (clNr * 3) / 2;
+	if (clNr & 1) {
+		p[0] = (p[0] & 0x0F) + (val << 4);
+		p[1] = val >> 4;
 	} else {
-		std::cout << "FAT size 16 not yet tested!!\n";
-		uint8_t* p = fsImage + SECTOR_SIZE + (clNr * 2);
-		p[0] = val & 0xFF;
-		p[1] = (val >> 8) & 0xFF;
+		p[0] = val;
+		p[1] = (p[1] & 0xF0) + ((val >> 8) & 0x0F);
 	}
 }
 
@@ -1415,7 +1401,6 @@ static struct option long_options[] = {
         {"update",            no_argument,       nullptr,       'u'},
         {"verbose",           no_argument,       nullptr,       'v'},
         {"version",           no_argument,       &showVersion,   1 },
-        {"fat16",             no_argument,       &doFat16,       1 },
         {"debug",             no_argument,       nullptr, DEBUG_OPTION},
         {"bootinfo",          no_argument,       &showBootInfo,  1 },
         {nullptr, 0, nullptr, 0},
@@ -1649,9 +1634,6 @@ int main(int argc, char** argv)
 	if (showHelp) {
 		displayUsage(programName);
 		exit(0);
-	}
-	if (doFat16) {
-		EOF_FAT = 0xffff;
 	}
 
 	if (argc < 2) {
