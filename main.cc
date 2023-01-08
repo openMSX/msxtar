@@ -39,6 +39,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <utime.h>
+#include <vector>
 
 #define PRT_DEBUG(mes)                                                         \
 	if (showDebug) {                                                       \
@@ -130,7 +131,7 @@ struct PhysDirEntry {
 };
 
 
-uint8_t* dskImage;
+std::vector<uint8_t> dskImage;
 uint8_t* fsImage;
 std::string msxRootDir;
 std::string msxHostDir;
@@ -858,14 +859,14 @@ void recurseDirFill(const std::string& dirName, int sector, int dirEntryIndex)
 
 /** Save the disk image from memory to disk
  */
-void writeImageToDisk(const std::string& filename, size_t sizeOfDskFile)
+void writeImageToDisk(const std::string& filename)
 {
 	FILE* file = fopen(filename.c_str(), "wb");
 	if (!file) {
 		std::cout << "Couldn't open file for writing!\n";
 		return;
 	}
-	fwrite(dskImage, 1, sizeOfDskFile, file);
+	fwrite(dskImage.data(), 1, dskImage.size(), file);
 	fclose(file);
 }
 
@@ -968,11 +969,8 @@ void createEmptyDSK(int nbSectors)
 {
 	// First create structure for the fake disk
 	// Allocate dskImage in memory
-	dskImage = new uint8_t[nbSectors * SECTOR_SIZE];
-	fsImage = dskImage;
-	if (!dskImage) {
-		CRITICAL_ERROR("Not enough memory for disk image");
-	}
+	dskImage.assign(nbSectors * SECTOR_SIZE, 0xE5);
+	fsImage = dskImage.data();
 
 	// Assign default boot disk to this instance
 	// give extra info on the boot sector
@@ -982,8 +980,6 @@ void createEmptyDSK(int nbSectors)
 
 	// Assign default empty values to disk
 	memset(fsImage + SECTOR_SIZE, 0x00, rootDirEnd * SECTOR_SIZE);
-	memset(fsImage + ((1 + rootDirEnd) * SECTOR_SIZE), 0xE5,
-	       (nbSectors - (1 + rootDirEnd)) * SECTOR_SIZE);
 	// for some reason the first 3uint8_ts are used to indicate the end of a
 	// cluster, making the first available cluster nr 2 some sources say
 	// that this indicates the disk format and FAT[0]should 0xF7 for single
@@ -1026,32 +1022,32 @@ std::string condenseName(const MSXDirEntry* dirEntry)
  */
 bool chPart(int chPartition)
 {
-	if (memcmp(dskImage, "T98HDDIMAGE.R0", 14) == 0) {
+	if (memcmp(dskImage.data(), "T98HDDIMAGE.R0", 14) == 0) {
 		// 0x110 size of the header(long), cylinder(long),
 		// surface(uint16_t), sector(uint16_t), secsize(uint16_t)
 		PRT_DEBUG("T98header recognized");
-		int surf = getLE16(dskImage + 0x110 + 8);
-		int sec = getLE16(dskImage + 0x110 + 10);
-		int sSize = getLE16(dskImage + 0x110 + 12);
+		int surf = getLE16(dskImage.data() + 0x110 + 8);
+		int sec = getLE16(dskImage.data() + 0x110 + 10);
+		int sSize = getLE16(dskImage.data() + 0x110 + 12);
 
 		const auto* p98 = reinterpret_cast<const PC98Part*>(
-			dskImage + 0x400 + (chPartition * 16));
+			dskImage.data() + 0x400 + (chPartition * 16));
 		int sCyl = getLE16(p98->startCyl);
 
-		fsImage = dskImage + 0x200 + (sSize * sCyl * surf * sec);
+		fsImage = dskImage.data() + 0x200 + (sSize * sCyl * surf * sec);
 		readBootSector();
 		return true;
 	}
 
-	if (memcmp(dskImage, "\353\376\220MSX_IDE ", 11) != 0) {
+	if (memcmp(dskImage.data(), "\353\376\220MSX_IDE ", 11) != 0) {
 		std::cout << "Not an idefdisk compatible 0 sector\n";
 		return false;
 	}
-	const auto* p = reinterpret_cast<const Partition*>(dskImage + 14 + (30 - chPartition) * 16);
+	const auto* p = reinterpret_cast<const Partition*>(dskImage.data() + 14 + (30 - chPartition) * 16);
 	if (p->start4 == 0) {
 		return false;
 	}
-	fsImage = dskImage + SECTOR_SIZE * p->start4;
+	fsImage = dskImage.data() + SECTOR_SIZE * p->start4;
 	readBootSector();
 	return true;
 }
@@ -1239,7 +1235,7 @@ void recurseDirExtract(std::string_view dirName, int sector, int dirEntryIndex)
 	} while (sector != 0);
 }
 
-size_t readDSK(const std::string& fileName)
+void readDSK(const std::string& fileName)
 {
 	// First read the disk image into memory
 
@@ -1250,31 +1246,27 @@ size_t readDSK(const std::string& fileName)
 	stat(fileName.c_str(), &fst);
 	size_t fsize = fst.st_size;
 
-	dskImage = static_cast<uint8_t*>(malloc(fsize));
+	dskImage.resize(fsize);
+	fsImage = dskImage.data();
 
-	fsImage = dskImage;
-	if (!dskImage) {
-		CRITICAL_ERROR("Fatal error: Not enough memory to read image!");
-	}
 	// open file for reading
 	PRT_DEBUG("open file for reading: " << fileName);
 	FILE* file = fopen(fileName.c_str(), "rb");
 	if (!file) {
 		CRITICAL_ERROR("Couldn't open " << fileName << " for reading!");
 	}
-	if (fread(dskImage, 1, fsize, file) != fsize) {
+	if (fread(dskImage.data(), 1, fsize, file) != fsize) {
 		CRITICAL_ERROR("Error while reading from " << fileName);
 	}
 
 	// Assuming normal disk image means reading boot sector
 	if (!msxPartOption) {
-		if (memcmp(dskImage, "T98HDDIMAGE.R0", 14) == 0 ||
-		    memcmp(dskImage, "\353\376\220MSX_IDE ", 11) == 0) {
+		if (memcmp(dskImage.data(), "T98HDDIMAGE.R0", 14) == 0 ||
+		    memcmp(dskImage.data(), "\353\376\220MSX_IDE ", 11) == 0) {
 			CRITICAL_ERROR("Please specify a partition to use!");
 		}
 		readBootSector();
 	}
-	return fsize;
 }
 
 void doSpecifiedExtraction()
@@ -1645,7 +1637,7 @@ int main(int argc, char** argv)
 		while (optind < argc) {
 			addCreateDSK(argv[optind++]);
 		}
-		writeImageToDisk(outputFile, nbSectors * SECTOR_SIZE);
+		writeImageToDisk(outputFile);
 		break;
 
 	case LIST_COMMAND:
@@ -1680,7 +1672,7 @@ int main(int argc, char** argv)
 		keepOption = true;
 		[[fallthrough]];
 	case UPDATE_COMMAND:
-		auto sizeOfDskFile = readDSK(outputFile);
+		readDSK(outputFile);
 		if (msxPartOption) {
 			if (msxAllPart) {
 				CRITICAL_ERROR("Specific partition only!");
@@ -1693,7 +1685,7 @@ int main(int argc, char** argv)
 		while (optind < argc) {
 			updateInDSK(argv[optind++]);
 		}
-		writeImageToDisk(outputFile, sizeOfDskFile);
+		writeImageToDisk(outputFile);
 		break;
 	}
 }
