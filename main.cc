@@ -267,14 +267,14 @@ int clusterToSector(int cluster)
  */
 uint16_t sectorToCluster(int sector)
 {
-	return 2 + (int)((sector - (1 + rootDirEnd)) / sectorsPerCluster);
+	return 2 + ((sector - (1 + rootDirEnd)) / sectorsPerCluster);
 }
 
 /** Initialize global variables by reading info from the boot sector
  */
 void readBootSector()
 {
-	MSXBootSector* boot = (MSXBootSector*)fsImage;
+	const auto* boot = reinterpret_cast<const MSXBootSector*>(fsImage);
 
 	nbSectors = boot->nrSectors; // assume a DS disk is used
 	SECTOR_SIZE = boot->bpSector;
@@ -331,7 +331,6 @@ void setBootSector(uint16_t nbSectors)
 	// now set correct info according to size of image (in sectors!)
 	// and using the same layout as used by Jon in IDEFDISK v 3.1
 	if (nbSectors >= 32733) {
-		nbSides = 2; // unknown yet
 		nbFats = 2;  // unknown yet
 		nbSectorsPerFat = 12; // copied from a partition from an IDE HD
 		nbSectorsPerCluster = 16;
@@ -387,11 +386,11 @@ void setBootSector(uint16_t nbSectors)
 		nbDirEntry = 112;
 		descriptor = 0xf9;
 	}
-	MSXBootSector* boot = (MSXBootSector*)fsImage;
+	auto* boot = reinterpret_cast<MSXBootSector*>(fsImage);
 
 	boot->nrSectors = nbSectors;
 	boot->nrSides = nbSides;
-	boot->spCluster = (uint8_t)nbSectorsPerCluster;
+	boot->spCluster = nbSectorsPerCluster;
 	boot->nrFats = nbFats;
 	boot->sectorsFat = nbSectorsPerFat;
 	boot->dirEntries = nbDirEntry;
@@ -527,7 +526,7 @@ MSXDirEntry* findEntryInDir(const std::string& name, int sector, uint8_t dirEntr
 	uint8_t i = 0;
 	do {
 		i = 0;
-		while (i < NUM_OF_ENT && strncmp(name.c_str(), (char*)p, 11) != 0) {
+		while (i < NUM_OF_ENT && memcmp(name.data(), p, 11) != 0) {
 			++i;
 			p += 32;
 		}
@@ -536,7 +535,7 @@ MSXDirEntry* findEntryInDir(const std::string& name, int sector, uint8_t dirEntr
 			p = fsImage + SECTOR_SIZE * sector;
 		}
 	} while (i >= NUM_OF_ENT && sector);
-	return sector ? (MSXDirEntry*)p : nullptr;
+	return sector ? reinterpret_cast<MSXDirEntry*>(p) : nullptr;
 }
 
 /** This function returns the sector and dirIndex for a new directory entry
@@ -639,8 +638,8 @@ int addMSXSubdir(const std::string& msxName, int t, int d, int sector)
 		std::cout << "couldn't add entry" << msxName << '\n';
 		return 0;
 	}
-	MSXDirEntry* dirEntry =
-	        (MSXDirEntry*)(fsImage + SECTOR_SIZE * result.sector + 32 * result.index);
+	auto* dirEntry = reinterpret_cast<MSXDirEntry*>(
+		fsImage + SECTOR_SIZE * result.sector + 32 * result.index);
 	dirEntry->attrib = T_MSX_DIR;
 	dirEntry->time = t;
 	dirEntry->date = d;
@@ -656,7 +655,7 @@ int addMSXSubdir(const std::string& msxName, int t, int d, int sector)
 	// clear this cluster
 	memset(fsImage + SECTOR_SIZE * logicalSector, 0, SECTOR_SIZE * sectorsPerCluster);
 	// now add the '.' and '..' entries!!
-	dirEntry = (MSXDirEntry*)(fsImage + SECTOR_SIZE * logicalSector);
+	dirEntry = reinterpret_cast<MSXDirEntry*>(fsImage + SECTOR_SIZE * logicalSector);
 	memset(dirEntry, 0, sizeof(MSXDirEntry));
 	memset(dirEntry, 0x20, 11); // all spaces
 	memset(dirEntry, '.', 1);
@@ -815,8 +814,8 @@ void addFileToDSK(const std::string& fullHostName, int sector, uint8_t dirEntryI
 		std::cout << "couldn't add entry" << fullHostName << '\n';
 		return;
 	}
-	MSXDirEntry* dirEntry =
-	        (MSXDirEntry*)(fsImage + SECTOR_SIZE * result.sector + 32 * result.index);
+	auto* dirEntry = reinterpret_cast<MSXDirEntry*>(
+		fsImage + SECTOR_SIZE * result.sector + 32 * result.index);
 	dirEntry->attrib = T_MSX_REG;
 
 	dirEntry->startCluster = 0;
@@ -1038,14 +1037,14 @@ void createEmptyDSK()
 	// TODO: check this :-)
 	// for now I simply repeat the media descriptor here
 	{
-		MSXBootSector* boot = (MSXBootSector*)fsImage;
+		const auto* boot = reinterpret_cast<const MSXBootSector*>(fsImage);
 		fsImage[SECTOR_SIZE + 0] = boot->descriptor;
 	}
 	fsImage[SECTOR_SIZE + 1] = 0xFF;
 	fsImage[SECTOR_SIZE + 2] = 0xFF;
 }
 
-std::string condenseName(MSXDirEntry* dirEntry)
+std::string condenseName(const MSXDirEntry* dirEntry)
 {
 	char condensedName[8 + 1 + 3 + 1];
 	char* p = condensedName;
@@ -1060,11 +1059,11 @@ std::string condenseName(MSXDirEntry* dirEntry)
 		*(p++) = '.';
 		for (int i = 0; i < 3; ++i) {
 			*p = tolower(dirEntry->ext[i]);
-			if (*p == ' ') *p = (char)0;
+			if (*p == ' ') *p = char(0);
 			++p;
 		}
 	}
-	*p = (char)0;
+	*p = char(0);
 	return condensedName;
 }
 
@@ -1073,7 +1072,7 @@ std::string condenseName(MSXDirEntry* dirEntry)
  */
 bool chPart(int chPartition)
 {
-	if (strncmp((char*)dskImage, "T98HDDIMAGE.R0", 14) == 0) {
+	if (memcmp(dskImage, "T98HDDIMAGE.R0", 14) == 0) {
 		// 0x110 size of the header(long), cylinder(long),
 		// surface(uint16_t), sector(uint16_t), secsize(uint16_t)
 		PRT_DEBUG("T98header recognized");
@@ -1083,19 +1082,20 @@ bool chPart(int chPartition)
 
 		SECTOR_SIZE = sSize;
 
-		PC98Part* P98 = (PC98Part*)(dskImage + 0x400 + (chPartition * 16));
-		int sCyl = getLE16(P98->startCyl);
+		const auto* p98 = reinterpret_cast<const PC98Part*>(
+			dskImage + 0x400 + (chPartition * 16));
+		int sCyl = getLE16(p98->startCyl);
 
 		fsImage = dskImage + 0x200 + (sSize * sCyl * surf * sec);
 		readBootSector();
 		return true;
 	}
 
-	if (strncmp((char*)dskImage, "\353\376\220MSX_IDE ", 11) != 0) {
+	if (memcmp(dskImage, "\353\376\220MSX_IDE ", 11) != 0) {
 		std::cout << "Not an idefdisk compatible 0 sector\n";
 		return false;
 	}
-	Partition* p = (Partition*)(dskImage + 14 + (30 - chPartition) * 16);
+	const auto* p = reinterpret_cast<const Partition*>(dskImage + 14 + (30 - chPartition) * 16);
 	if (p->start4 == 0) {
 		return false;
 	}
@@ -1184,7 +1184,7 @@ void makeTimeFromDE(struct tm* ptm, const int* td)
 
 /** Set the entries from dirEntry to the timestamp of resultFile
  */
-void changeTime(const std::string& resultFile, MSXDirEntry* dirEntry)
+void changeTime(const std::string& resultFile, const MSXDirEntry* dirEntry)
 {
 	if (touchOption) return;
 
@@ -1201,7 +1201,7 @@ void changeTime(const std::string& resultFile, MSXDirEntry* dirEntry)
 	utime(resultFile.c_str(), &uTim);
 }
 
-void fileExtract(const std::string& resultFile, MSXDirEntry* dirEntry)
+void fileExtract(const std::string& resultFile, const MSXDirEntry* dirEntry)
 {
 	long size = dirEntry->size;
 	int sector = clusterToSector(dirEntry->startCluster);
@@ -1229,7 +1229,8 @@ void recurseDirExtract(std::string_view dirName, int sector, int dirEntryIndex)
 {
 	int i = dirEntryIndex;
 	do {
-		MSXDirEntry* dirEntry = (MSXDirEntry*)((fsImage + SECTOR_SIZE * sector) + 32 * i);
+		const auto* dirEntry = reinterpret_cast<const MSXDirEntry*>(
+			(fsImage + SECTOR_SIZE * sector) + 32 * i);
 		if (dirEntry->filename[0] != 0xe5 &&
 		    dirEntry->filename[0] != 0x00) {
 			std::string filename = condenseName(dirEntry);
@@ -1281,7 +1282,7 @@ void recurseDirExtract(std::string_view dirName, int sector, int dirEntryIndex)
 				sector = getNextSector(sector);
 			}
 			i = 0;
-			dirEntry = (MSXDirEntry*)(fsImage + SECTOR_SIZE * sector);
+			dirEntry = reinterpret_cast<const MSXDirEntry*>(fsImage + SECTOR_SIZE * sector);
 		}
 	} while (sector != 0);
 }
@@ -1297,7 +1298,7 @@ void readDSK(const std::string& fileName)
 	stat(fileName.c_str(), &fst);
 	size_t fsize = fst.st_size;
 
-	dskImage = (uint8_t*)malloc(fsize);
+	dskImage = static_cast<uint8_t*>(malloc(fsize));
 	sizeOfDskFile = fsize;
 
 	fsImage = dskImage;
@@ -1316,8 +1317,8 @@ void readDSK(const std::string& fileName)
 
 	// Assuming normal disk image means reading boot sector
 	if (!msxPartOption) {
-		if (strncmp((char*)dskImage, "T98HDDIMAGE.R0", 14) == 0 ||
-		    strncmp((char*)dskImage, "\353\376\220MSX_IDE ", 11) == 0) {
+		if (memcmp(dskImage, "T98HDDIMAGE.R0", 14) == 0 ||
+		    memcmp(dskImage, "\353\376\220MSX_IDE ", 11) == 0) {
 			CRITICAL_ERROR("Please specify a partition to use!");
 		}
 		readBootSector();
@@ -1471,7 +1472,7 @@ int main(int argc, char** argv)
 
 		// Allocate a new argument array, and copy program name in it
 		int new_argc = argc - 1 + strlen(argv[1]);
-		char** new_argv = (char**)malloc((new_argc + 1) * sizeof(char*));
+		char** new_argv = static_cast<char**>(malloc((new_argc + 1) * sizeof(char*)));
 		char** in = argv;
 		char** out = new_argv;
 		*out++ = *in++;
