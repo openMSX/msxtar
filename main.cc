@@ -20,6 +20,7 @@
 */
 
 #include "StringOp.hh"
+#include "endian.hh"
 #include <algorithm>
 #include <climits>
 #include <cstdint>
@@ -56,17 +57,17 @@
 struct MSXBootSector {
 	uint8_t jumpCode[3];           // 0xE5 to boot program
 	uint8_t name[8];
-	uint8_t bpSector[2];           // uint8_ts per sector (always 512)
-	uint8_t spCluster[1];          // sectors per cluster (always 2)
-	uint8_t resvSectors[2];        // amount of non-data sectors (ex boot sector)
-	uint8_t nrFats[1];             // number of fats
-	uint8_t dirEntries[2];         // max number of files in root directory
-	uint8_t nrSectors[2];          // number of sectors on this disk
-	uint8_t descriptor[1];         // media descriptor
-	uint8_t sectorsFat[2];         // sectors per FAT
-	uint8_t sectorsTrack[2];       // sectors per track
-	uint8_t nrSides[2];            // number of sides
-	uint8_t hiddenSectors[2];      // not used
+	Endian::UA_L16 bpSector;       // uint8_ts per sector (always 512)
+	uint8_t spCluster;             // sectors per cluster (always 2)
+	Endian::UA_L16 resvSectors;    // amount of non-data sectors (ex boot sector)
+	uint8_t nrFats;                // number of fats
+	Endian::UA_L16 dirEntries;     // max number of files in root directory
+	Endian::UA_L16 nrSectors;      // number of sectors on this disk
+	uint8_t descriptor;            // media descriptor
+	Endian::UA_L16 sectorsFat;     // sectors per FAT
+	Endian::UA_L16 sectorsTrack;   // sectors per track
+	Endian::UA_L16 nrSides;        // number of sides
+	Endian::UA_L16 hiddenSectors;  // not used
 	uint8_t bootProgram[512 - 30]; // actual boot program
 };
 
@@ -75,24 +76,24 @@ struct MSXDirEntry {
 	uint8_t ext[3];
 	uint8_t attrib;
 	uint8_t reserved[10]; // unused
-	uint8_t time[2];
-	uint8_t date[2];
-	uint8_t startCluster[2];
-	uint8_t size[4];
+	Endian::UA_L16 time;
+	Endian::UA_L16 date;
+	Endian::UA_L16 startCluster;
+	Endian::UA_L32 size;
 };
 
 // Modified struct taken over from Linux' fdisk.h
 struct Partition {
-	uint8_t boot_ind;   // 0x80 - active
-	uint8_t head;       // starting head
-	uint8_t sector;     // starting sector
-	uint8_t cyl;        // starting cylinder
-	uint8_t sys_ind;    // What partition type
-	uint8_t end_head;   // end head
-	uint8_t end_sector; // end sector
-	uint8_t end_cyl;    // end cylinder
-	uint8_t start4[4];  // starting sector counting from 0
-	uint8_t size4[4];   // nr of sectors in partition
+	uint8_t boot_ind;      // 0x80 - active
+	uint8_t head;          // starting head
+	uint8_t sector;        // starting sector
+	uint8_t cyl;           // starting cylinder
+	uint8_t sys_ind;       // What partition type
+	uint8_t end_head;      // end head
+	uint8_t end_sector;    // end sector
+	uint8_t end_cyl;       // end cylinder
+	Endian::UA_L32 start4; // starting sector counting from 0
+	Endian::UA_L32 size4;  // nr of sectors in partition
 };
 
 struct PC98Part {
@@ -248,28 +249,9 @@ static constexpr uint8_t dos2BootBlock[512] = {
 
 const uint8_t* defaultBootBlock = dos2BootBlock;
 
-// functions to change DirEntries
-void setLE16(uint8_t* x, int y)
-{
-	x[0] = uint8_t((y >> 0) & 255);
-	x[1] = uint8_t((y >> 8) & 255);
-}
-void setLE32(uint8_t* x, int y)
-{
-	x[0] = uint8_t((y >>  0) & 255);
-	x[1] = uint8_t((y >>  8) & 255);
-	x[2] = uint8_t((y >> 16) & 255);
-	x[3] = uint8_t((y >> 24) & 255);
-}
-
-// functions to read DirEntries
 uint16_t getLE16(const uint8_t* x)
 {
 	return (x[0] << 0) + (x[1] << 8);
-}
-int getLE32(const uint8_t* x)
-{
-	return (x[0] << 0) + (x[1] << 8) + (x[2] << 16) + (x[3] << 24);
 }
 
 /** Transforms a cluster number towards the first sector of this cluster
@@ -294,14 +276,14 @@ void readBootSector()
 {
 	MSXBootSector* boot = (MSXBootSector*)fsImage;
 
-	nbSectors = getLE16(boot->nrSectors); // assume a DS disk is used
-	SECTOR_SIZE = getLE16(boot->bpSector);
-	sectorsPerTrack = getLE16(boot->nrSectors);
-	nbSides = getLE16(boot->nrSides);
-	nbFats = (uint8_t)boot->nrFats[0];
-	sectorsPerFat = getLE16(boot->sectorsFat);
-	nbRootDirSectors = getLE16(boot->dirEntries) / (SECTOR_SIZE / 32);
-	sectorsPerCluster = (int)(uint8_t)boot->spCluster[0];
+	nbSectors = boot->nrSectors; // assume a DS disk is used
+	SECTOR_SIZE = boot->bpSector;
+	sectorsPerTrack = boot->sectorsTrack;
+	nbSides = boot->nrSides;
+	nbFats = boot->nrFats;
+	sectorsPerFat = boot->sectorsFat;
+	nbRootDirSectors = boot->dirEntries / (SECTOR_SIZE / 32);
+	sectorsPerCluster = boot->spCluster;
 
 	rootDirStart = 1 + nbFats * sectorsPerFat;
 	msxChrootSector = rootDirStart;
@@ -312,15 +294,15 @@ void readBootSector()
 	if (showBootInfo) {
 		std::cout << "---------- Boot sector info -----\n"
 		             "\n"
-		             "  bytes per sector:      " << getLE16(boot->bpSector) << "\n"
-		             "  sectors per cluster:   " << (int)(uint8_t)boot->spCluster[0] << "\n"
-		             "  number of FAT's:       " << (int)(uint8_t)boot->nrFats[0] << "\n"
-		             "  dirEntries in rootDir: " << getLE16(boot->dirEntries) << "\n"
-		             "  sectors on disk:       " << getLE16(boot->nrSectors) << "\n"
-		             "  media descriptor:      " << std::hex << (int)boot->descriptor[0] << std::dec << "\n"
-		             "  sectors per FAT:       " << getLE16(boot->sectorsFat) << "\n"
-		             "  sectors per track:     " << getLE16(boot->sectorsTrack) << "\n"
-		             "  number of sides:       " << getLE16(boot->nrSides) << "\n"
+		             "  bytes per sector:      " << boot->bpSector << "\n"
+		             "  sectors per cluster:   " << int(boot->spCluster) << "\n"
+		             "  number of FAT's:       " << int(boot->nrFats) << "\n"
+		             "  dirEntries in rootDir: " << boot->dirEntries << "\n"
+		             "  sectors on disk:       " << boot->nrSectors << "\n"
+		             "  media descriptor:      " << std::hex << int(boot->descriptor) << std::dec << "\n"
+		             "  sectors per FAT:       " << boot->sectorsFat << "\n"
+		             "  sectors per track:     " << boot->sectorsTrack << "\n"
+		             "  number of sides:       " << boot->nrSides << "\n"
 		             "\n"
 		             "Calculated values\n"
 		             "\n"
@@ -407,15 +389,15 @@ void setBootSector(uint16_t nbSectors)
 	}
 	MSXBootSector* boot = (MSXBootSector*)fsImage;
 
-	setLE16(boot->nrSectors, nbSectors);
-	setLE16(boot->nrSides, nbSides);
-	boot->spCluster[0] = (uint8_t)nbSectorsPerCluster;
-	boot->nrFats[0] = nbFats;
-	setLE16(boot->sectorsFat, nbSectorsPerFat);
-	setLE16(boot->dirEntries, nbDirEntry);
-	boot->descriptor[0] = descriptor;
-	setLE16(boot->resvSectors, nbReservedSectors);
-	setLE16(boot->hiddenSectors, nbHiddenSectors);
+	boot->nrSectors = nbSectors;
+	boot->nrSides = nbSides;
+	boot->spCluster = (uint8_t)nbSectorsPerCluster;
+	boot->nrFats = nbFats;
+	boot->sectorsFat = nbSectorsPerFat;
+	boot->dirEntries = nbDirEntry;
+	boot->descriptor = descriptor;
+	boot->resvSectors = nbReservedSectors;
+	boot->hiddenSectors = nbHiddenSectors;
 
 	readBootSector();
 }
@@ -660,15 +642,15 @@ int addMSXSubdir(const std::string& msxName, int t, int d, int sector)
 	MSXDirEntry* dirEntry =
 	        (MSXDirEntry*)(fsImage + SECTOR_SIZE * result.sector + 32 * result.index);
 	dirEntry->attrib = T_MSX_DIR;
-	setLE16(dirEntry->time, t);
-	setLE16(dirEntry->date, d);
+	dirEntry->time = t;
+	dirEntry->date = d;
 	memcpy(dirEntry, makeSimpleMSXFileName(msxName).c_str(), 11);
 
 	// dirEntry->fileSize = fSize;
 	uint16_t curCl = 2;
 	curCl = findFirstFreeCluster();
 	PRT_DEBUG("New subdir starting at cluster " << curCl);
-	setLE16(dirEntry->startCluster, curCl);
+	dirEntry->startCluster = curCl;
 	writeFAT(curCl, EOF_FAT);
 	int logicalSector = clusterToSector(curCl);
 	// clear this cluster
@@ -679,22 +661,22 @@ int addMSXSubdir(const std::string& msxName, int t, int d, int sector)
 	memset(dirEntry, 0x20, 11); // all spaces
 	memset(dirEntry, '.', 1);
 	dirEntry->attrib = T_MSX_DIR;
-	setLE16(dirEntry->time, t);
-	setLE16(dirEntry->date, d);
-	setLE16(dirEntry->startCluster, curCl);
+	dirEntry->time = t;
+	dirEntry->date = d;
+	dirEntry->startCluster = curCl;
 
 	++dirEntry;
 	memset(dirEntry, 0, sizeof(MSXDirEntry));
 	memset(dirEntry, 0x20, 11); // all spaces
 	memset(dirEntry, '.', 2);
 	dirEntry->attrib = T_MSX_DIR;
-	setLE16(dirEntry->time, t);
-	setLE16(dirEntry->date, d);
+	dirEntry->time = t;
+	dirEntry->date = d;
 
 	int parentCluster = sectorToCluster(sector);
 	if (sector == rootDirStart) parentCluster = 0;
 
-	setLE16(dirEntry->startCluster, parentCluster);
+	dirEntry->startCluster = parentCluster;
 
 	return logicalSector;
 }
@@ -736,11 +718,11 @@ void alterFileInDSK(MSXDirEntry* msxDirEntry, const std::string& hostName)
 
 	PRT_DEBUG("AlterFileInDSK: filesize " << fSize);
 
-	uint16_t curCl = getLE16(msxDirEntry->startCluster);
+	uint16_t curCl = msxDirEntry->startCluster;
 	// if entry first used then no cluster assigned yet
 	if (curCl == 0) {
 		curCl = findFirstFreeCluster();
-		setLE16(msxDirEntry->startCluster, curCl);
+		msxDirEntry->startCluster = curCl;
 		writeFAT(curCl, EOF_FAT);
 		needsNew = true;
 	}
@@ -812,7 +794,7 @@ void alterFileInDSK(MSXDirEntry* msxDirEntry, const std::string& hostName)
 		std::cout << "Fake disk image full: " << hostName << " truncated.\n";
 	}
 	// write (possibly truncated) file size
-	setLE32(msxDirEntry->size, fSize - size);
+	msxDirEntry->size = fSize - size;
 }
 
 /** Add file to the MSX disk in the subdir pointed to by 'sector'
@@ -837,7 +819,7 @@ void addFileToDSK(const std::string& fullHostName, int sector, uint8_t dirEntryI
 	        (MSXDirEntry*)(fsImage + SECTOR_SIZE * result.sector + 32 * result.index);
 	dirEntry->attrib = T_MSX_REG;
 
-	setLE16(dirEntry->startCluster, 0);
+	dirEntry->startCluster = 0;
 
 	PRT_VERBOSE(fullHostName << " \t-> \"" << msxName << '"');
 	memcpy(dirEntry, msxName.c_str(), 11);
@@ -850,8 +832,8 @@ void addFileToDSK(const std::string& fullHostName, int sector, uint8_t dirEntryI
 	int td[2];
 
 	makeFatTime(mtim, td);
-	setLE16(dirEntry->time, td[0]);
-	setLE16(dirEntry->date, td[1]);
+	dirEntry->time = td[0];
+	dirEntry->date = td[1];
 
 	alterFileInDSK(dirEntry, fullHostName);
 }
@@ -897,7 +879,7 @@ void recurseDirFill(const std::string& dirName, int sector, int dirEntryIndex)
 				int result;
 				if (auto* msxDirEntry = findEntryInDir(msxName, sector, dirEntryIndex)) {
 					PRT_VERBOSE("Dir entry " << name << " exists already");
-					result = clusterToSector(getLE16(msxDirEntry->startCluster));
+					result = clusterToSector(msxDirEntry->startCluster);
 				} else {
 					PRT_VERBOSE("Adding dir entry " << name);
 					result = addSubDirToDSK(path, name, sector); // used here to add file into fake dsk
@@ -953,7 +935,7 @@ void updateCreateDSK(const std::string& fileName)
 			int result;
 			if (auto* msxDirEntry = findEntryInDir(msxName, msxChrootSector, msxChrootStartIndex)) {
 				PRT_VERBOSE("Dir entry " << fileName << " exists already");
-				result = clusterToSector(getLE16(msxDirEntry->startCluster));
+				result = clusterToSector(msxDirEntry->startCluster);
 			} else {
 				PRT_VERBOSE("Adding dir entry " << fileName);
 				result = addSubDirToDSK(fileName, fileName, msxChrootSector);
@@ -994,7 +976,7 @@ void addCreateDSK(const std::string& fileName)
 			int result;
 			if (auto* msxDirEntry = findEntryInDir(msxName, msxChrootSector, msxChrootStartIndex)) {
 				PRT_VERBOSE("Dir entry " << fileName << " exists already ");
-				result = clusterToSector(getLE16(msxDirEntry->startCluster));
+				result = clusterToSector(msxDirEntry->startCluster);
 			} else {
 				PRT_VERBOSE("Adding dir entry " << fileName);
 				result = addSubDirToDSK(fileName, fileName, msxChrootSector);
@@ -1057,7 +1039,7 @@ void createEmptyDSK()
 	// for now I simply repeat the media descriptor here
 	{
 		MSXBootSector* boot = (MSXBootSector*)fsImage;
-		fsImage[SECTOR_SIZE + 0] = boot->descriptor[0];
+		fsImage[SECTOR_SIZE + 0] = boot->descriptor;
 	}
 	fsImage[SECTOR_SIZE + 1] = 0xFF;
 	fsImage[SECTOR_SIZE + 2] = 0xFF;
@@ -1114,10 +1096,10 @@ bool chPart(int chPartition)
 		return false;
 	}
 	Partition* p = (Partition*)(dskImage + 14 + (30 - chPartition) * 16);
-	if (getLE32(p->start4) == 0) {
+	if (p->start4 == 0) {
 		return false;
 	}
-	fsImage = dskImage + SECTOR_SIZE * getLE32(p->start4);
+	fsImage = dskImage + SECTOR_SIZE * p->start4;
 	readBootSector();
 	return true;
 }
@@ -1140,7 +1122,7 @@ int findStartSectorOfDir(std::string_view dirName)
 		// find directory
 		std::string simple = makeSimpleMSXFileName(directory);
 		if (auto* msxDirEntry = findEntryInDir(simple, msxDirSector, msxDirStartIndex)) {
-			msxDirSector = clusterToSector(getLE16(msxDirEntry->startCluster));
+			msxDirSector = clusterToSector(msxDirEntry->startCluster);
 			msxDirStartIndex = 2;
 			totalPath += '/';
 			totalPath += directory;
@@ -1170,7 +1152,7 @@ void chroot(std::string_view newRootDir)
 		// find firstPart directory or create it
 		std::string simple = makeSimpleMSXFileName(firstPart);
 		if (auto* msxDirEntry = findEntryInDir(simple, msxChrootSector, msxChrootStartIndex)) {
-			msxChrootSector = clusterToSector(getLE16(msxDirEntry->startCluster));
+			msxChrootSector = clusterToSector(msxDirEntry->startCluster);
 			msxChrootStartIndex = 2;
 		} else {
 			// creat new subdir
@@ -1207,8 +1189,8 @@ void changeTime(const std::string& resultFile, MSXDirEntry* dirEntry)
 	if (touchOption) return;
 
 	int td[2];
-	td[0] = getLE16(dirEntry->time);
-	td[1] = getLE16(dirEntry->date);
+	td[0] = dirEntry->time;
+	td[1] = dirEntry->date;
 
 	struct tm mTim;
 	struct utimbuf uTim;
@@ -1221,8 +1203,8 @@ void changeTime(const std::string& resultFile, MSXDirEntry* dirEntry)
 
 void fileExtract(const std::string& resultFile, MSXDirEntry* dirEntry)
 {
-	long size = getLE32(dirEntry->size);
-	int sector = clusterToSector(getLE16(dirEntry->startCluster));
+	long size = dirEntry->size;
+	int sector = clusterToSector(dirEntry->startCluster);
 
 	FILE* file = fopen(resultFile.c_str(), "wb");
 	if (!file) {
@@ -1230,7 +1212,7 @@ void fileExtract(const std::string& resultFile, MSXDirEntry* dirEntry)
 	}
 	while (size && sector) {
 		uint8_t* buf = fsImage + SECTOR_SIZE * sector;
-		long saveSize = (size > SECTOR_SIZE ? SECTOR_SIZE : size);
+		auto saveSize = (size > SECTOR_SIZE ? SECTOR_SIZE : size);
 		fwrite(buf, 1, saveSize, file);
 		size -= saveSize;
 		sector = getNextSector(sector);
@@ -1255,8 +1237,8 @@ void recurseDirExtract(std::string_view dirName, int sector, int dirEntryIndex)
 			                     ? std::string(dirName) + '/' + filename
 			                     : filename;
 			int td[2];
-			td[0] = getLE16(dirEntry->time);
-			td[1] = getLE16(dirEntry->date);
+			td[0] = dirEntry->time;
+			td[1] = dirEntry->date;
 
 			tm mTim;
 			makeTimeFromDE(&mTim, td);
@@ -1270,7 +1252,7 @@ void recurseDirExtract(std::string_view dirName, int sector, int dirEntryIndex)
 			if (dirEntry->attrib & T_MSX_DIR) {
 				sprintf(osBuf, "%-32s %s %12s", fullName.c_str(), tsBuf, "<dir>");
 			} else {
-				sprintf(osBuf, "%-32s %s %12d", fullName.c_str(), tsBuf, getLE32(dirEntry->size));
+				sprintf(osBuf, "%-32s %s %12d", fullName.c_str(), tsBuf, uint32_t(dirEntry->size));
 			}
 			PRT_VERBOSE(osBuf);
 
@@ -1283,7 +1265,7 @@ void recurseDirExtract(std::string_view dirName, int sector, int dirEntryIndex)
 				changeTime(fullName, dirEntry);
 				recurseDirExtract(
 				        fullName,
-				        clusterToSector(getLE16(dirEntry->startCluster)),
+				        clusterToSector(dirEntry->startCluster),
 				        2); // read subdir and skip entries for '.' and '..'
 			}
 		}
@@ -1372,7 +1354,7 @@ void doSpecifiedExtraction()
 		}
 		if (msxDirEntry->attrib == T_MSX_DIR) {
 			recurseDirExtract(file,
-			                  clusterToSector(getLE16(msxDirEntry->startCluster)),
+			                  clusterToSector(msxDirEntry->startCluster),
 			                  2); // read subdir and skip entries for '.' and '..'
 		}
 	} else {
