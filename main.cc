@@ -1342,9 +1342,6 @@ void displayUsage(std::string_view programName)
 		"      --concatenate       same as -A\n"
 		"\n"
 		"Handling of file attributes:\n"
-		"      --owner=NAME             force NAME as owner for added files\n"
-		"      --group=NAME             force NAME as group for added files\n"
-		"      --mode=CHANGES           force (symbolic) mode CHANGES for added files\n"
 		"  -k, --keep                   keep existing files, do not overwrite\n"
 		"  -m, --modification-time      don't extract file modified time\n"
 		"\n"
@@ -1369,37 +1366,41 @@ void displayUsage(std::string_view programName)
 		"\n";
 }
 
-static constexpr const char* OPTION_STRING = "12rAP:jzkmMcxf:xzwktzuS:v";
+static constexpr const char* OPTION_STRING =
+	"txcruAkmf:S:12MP:v" // documented (same order as in help text)
+	"jz"; // undocumented
 
 static struct option long_options[] = {
-        {"dos1",              no_argument,       nullptr,       '1'},
-        {"dos2",              no_argument,       nullptr,       '2'},
-        {"append",            no_argument,       nullptr,       'r'},
-        {"catenate",          no_argument,       nullptr,       'A'},
-        {"concatenate",       no_argument,       nullptr,       'A'},
-        {"bzip2",             no_argument,       nullptr,       'j'},
-        {"confirmation",      no_argument,       nullptr,       'w'},
-        {"create",            no_argument,       nullptr,       'c'},
-        {"list",              no_argument,       nullptr,       't'},
-        {"extract",           no_argument,       nullptr,       'x'},
-        {"get",               no_argument,       nullptr,       'x'},
-        {"file",              required_argument, nullptr,       'f'},
-        {"msxdir",            required_argument, nullptr,       'M'},
-        {"partition",         required_argument, nullptr,       'P'},
-        {"keep",              no_argument,       nullptr,       'k'},
-        {"size",              required_argument, nullptr,       'S'},
-        {"gunzip",            no_argument,       nullptr,       'z'},
-        {"gzip",              no_argument,       nullptr,       'z'},
-        {"help",              no_argument,       &showHelp,      1 },
-        {"interactive",       no_argument,       nullptr,       'w'},
-        {"modification-time", no_argument,       nullptr,       'm'},
-        {"keep-old-files",    no_argument,       nullptr,       'k'},
-        {"ungzip",            no_argument,       nullptr,       'z'},
-        {"update",            no_argument,       nullptr,       'u'},
-        {"verbose",           no_argument,       nullptr,       'v'},
-        {"version",           no_argument,       &showVersion,   1 },
-        {"debug",             no_argument,       nullptr, DEBUG_OPTION},
-        {nullptr, 0, nullptr, 0},
+	// documented options (keep these in the same order as in the help text)
+	{"list",              no_argument,       nullptr,       't'},
+	{"extract",           no_argument,       nullptr,       'x'},
+	{"get",               no_argument,       nullptr,       'x'},
+	{"create",            no_argument,       nullptr,       'c'},
+	{"append",            no_argument,       nullptr,       'r'},
+	{"update",            no_argument,       nullptr,       'u'},
+	{"catenate",          no_argument,       nullptr,       'A'},
+	{"concatenate",       no_argument,       nullptr,       'A'},
+	{"keep",              no_argument,       nullptr,       'k'},
+	{"modification-time", no_argument,       nullptr,       'm'},
+	{"file",              required_argument, nullptr,       'f'},
+	{"size",              required_argument, nullptr,       'S'},
+	{"dos1",              no_argument,       nullptr,       '1'},
+	{"dos2",              no_argument,       nullptr,       '2'},
+	{"msxdir",            required_argument, nullptr,       'M'},
+	{"partition",         required_argument, nullptr,       'P'},
+	{"help",              no_argument,       &showHelp,      1 },
+	{"version",           no_argument,       &showVersion,   1 },
+	{"verbose",           no_argument,       nullptr,       'v'},
+
+	// undocumented option (developer-only)
+	{"debug",             no_argument,       nullptr, DEBUG_OPTION},
+
+	// undocumented options, parse them, but they have no effect
+	{"bzip2",             no_argument,       nullptr,       'j'},
+	{"gunzip",            no_argument,       nullptr,       'z'},
+	{"gzip",              no_argument,       nullptr,       'z'},
+	{"ungzip",            no_argument,       nullptr,       'z'},
+	{nullptr, 0, nullptr, 0},
 };
 
 int main(int argc, char** argv)
