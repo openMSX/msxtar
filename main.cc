@@ -130,42 +130,24 @@ struct PhysDirEntry {
 };
 
 
-char* programName;
-
-long sizeOfDskFile;
 uint8_t* dskImage;
 uint8_t* fsImage;
 std::string msxRootDir;
 std::string msxHostDir;
-std::string inputFile;
-std::string outputFile;
-int nbSectors;
 int maxCluster;
-int sectorsPerCluster;
-int sectorsPerTrack;
-int sectorsPerFat;
-int nbFats;
-int nbSides;
-uint8_t nbSectorsPerCluster = 2;
-int nbRootDirSectors;
+int sectorsPerCluster = 2;
 int rootDirStart; // first sector from the root directory
 int rootDirEnd;   // last sector from the root directory
 int msxChrootSector;
 int msxChrootStartIndex = 0;
-int msxPartition = 0;
 int globalArgc;
 char** globalArgv;
-int verboseOption = 0;
-bool doTest = false; // reserved the flag for test how don't want to write to disk actually
-bool doFlat = false; // reserved the flag for MSX1ers who don't like to create subdirs
+bool verboseOption = false;
 bool doExtract = false;
 bool doSubdirs = true;
-bool doSingleSided = false;
 bool touchOption = false;
 bool keepOption = false;
-bool msxDirOption = false;
 bool msxPartOption = false;
-bool msxAllPart = false;
 
 static int showVersion = 0;  // If nonzero, display version information and exit
 static int showHelp = 0;     // If nonzero, display usage information and exit
@@ -276,12 +258,10 @@ void readBootSector()
 {
 	const auto* boot = reinterpret_cast<const MSXBootSector*>(fsImage);
 
-	nbSectors = boot->nrSectors; // assume a DS disk is used
-	sectorsPerTrack = boot->sectorsTrack;
-	nbSides = boot->nrSides;
-	nbFats = boot->nrFats;
-	sectorsPerFat = boot->sectorsFat;
-	nbRootDirSectors = boot->dirEntries / (SECTOR_SIZE / 32);
+	int nbSectors = boot->nrSectors;
+	int nbFats = boot->nrFats;
+	int sectorsPerFat = boot->sectorsFat;
+	int nbRootDirSectors = boot->dirEntries / NUM_OF_ENT;
 	sectorsPerCluster = boot->spCluster;
 
 	rootDirStart = 1 + nbFats * sectorsPerFat;
@@ -323,6 +303,7 @@ void setBootSector(uint16_t nbSectors)
 	uint8_t nbFats = 2;
 	uint8_t nbReservedSectors = 1; // Just copied from a 32MB IDE partition
 	uint8_t nbSectorsPerFat = 2;
+	uint8_t nbSectorsPerCluster = 2;
 	uint8_t nbHiddenSectors = 1;
 	uint16_t nbDirEntry = 112;
 	uint8_t descriptor = 0xf8;
@@ -478,11 +459,11 @@ int getNextSector(int sector)
 	if (sector == rootDirEnd) return 0;
 	if (sector < rootDirEnd) return sector + 1;
 
-	if ((nbSectorsPerCluster > 1) &&
-	    (sectorToCluster(sector) == sectorToCluster(sector + 1))) {
+	unsigned currCluster = sectorToCluster(sector);
+	if (currCluster == sectorToCluster(sector + 1)) {
 		return sector + 1;
 	} else {
-		int nextCl = readFAT(sectorToCluster(sector));
+		unsigned nextCl = readFAT(currCluster);
 		if (nextCl == EOF_FAT) {
 			return 0;
 		} else {
@@ -894,23 +875,14 @@ void recurseDirFill(const std::string& dirName, int sector, int dirEntryIndex)
 
 /** Save the disk image from memory to disk
  */
-void writeImageToDisk(const std::string& filename)
+void writeImageToDisk(const std::string& filename, size_t sizeOfDskFile)
 {
-	if (doTest) {
-		PRT_VERBOSE("MSXtar doesn't write to disk for test");
-		return; // test is not to write.
-	}
-
 	FILE* file = fopen(filename.c_str(), "wb");
 	if (!file) {
 		std::cout << "Couldn't open file for writing!\n";
 		return;
 	}
-	if (sizeOfDskFile) {
-		fwrite(dskImage, 1, sizeOfDskFile, file);
-	} else {
-		fwrite(dskImage, 1, nbSectors * SECTOR_SIZE, file);
-	}
+	fwrite(dskImage, 1, sizeOfDskFile, file);
 	fclose(file);
 }
 
@@ -925,7 +897,7 @@ void updateCreateDSK(const std::string& fileName)
 
 	if (fst.st_mode & S_IFDIR) {
 		// this should be a directory
-		if (doFlat || !doSubdirs) {
+		if (!doSubdirs) {
 			// put files in the directory to root
 			recurseDirFill(fileName, msxChrootSector, msxChrootStartIndex);
 		} else {
@@ -964,7 +936,7 @@ void addCreateDSK(const std::string& fileName)
 		// this should be a directory
 		PRT_VERBOSE("addCreateDSK: adding directory " << fileName);
 
-		if (doFlat || !doSubdirs) {
+		if (!doSubdirs) {
 			// put files in the directory to root
 			msxRootDir = fileName;
 			recurseDirFill(fileName, msxChrootSector, msxChrootStartIndex);
@@ -1009,7 +981,7 @@ void updateInDSK(std::string name)
 
 /** Create an empty disk image with correct boot sector,FAT etc.
  */
-void createEmptyDSK()
+void createEmptyDSK(int nbSectors)
 {
 	// First create structure for the fake disk
 	// Allocate dskImage in memory
@@ -1111,7 +1083,7 @@ int findStartSectorOfDir(std::string_view dirName)
 	std::string totalPath = ".";
 	int msxDirSector = msxChrootSector;
 	int msxDirStartIndex = msxChrootStartIndex;
-	// if (!msxDirOption){return;}
+
 	while (!work.empty()) {
 		StringOp::trimLeft(work, "/\\");
 		auto [directory, rest] = StringOp::splitOnFirst(work, "/\\");
@@ -1284,7 +1256,7 @@ void recurseDirExtract(std::string_view dirName, int sector, int dirEntryIndex)
 	} while (sector != 0);
 }
 
-void readDSK(const std::string& fileName)
+size_t readDSK(const std::string& fileName)
 {
 	// First read the disk image into memory
 
@@ -1296,7 +1268,6 @@ void readDSK(const std::string& fileName)
 	size_t fsize = fst.st_size;
 
 	dskImage = static_cast<uint8_t*>(malloc(fsize));
-	sizeOfDskFile = fsize;
 
 	fsImage = dskImage;
 	if (!dskImage) {
@@ -1320,6 +1291,7 @@ void readDSK(const std::string& fileName)
 		}
 		readBootSector();
 	}
+	return fsize;
 }
 
 void doSpecifiedExtraction()
@@ -1360,7 +1332,7 @@ void doSpecifiedExtraction()
 	}
 }
 
-void display_usage()
+void displayUsage(std::string_view programName)
 {
 	std::cout <<
 		"`msxtar' saves many files together into a single disk image to be used by\n"
@@ -1414,7 +1386,7 @@ void display_usage()
 		"\n";
 }
 
-#define OPTION_STRING "12rAP:jzkmMcxf:xzwktzuS:v"
+static constexpr const char* OPTION_STRING = "12rAP:jzkmMcxf:xzwktzuS:v";
 
 static struct option long_options[] = {
         {"dos1",              no_argument,       nullptr,       '1'},
@@ -1455,7 +1427,7 @@ int main(int argc, char** argv)
 	// this code is to be able to handle a command like : 'tar cvf name'
 	// this will be translated to 'tar -c -v -f name'
 
-	programName = argv[0];
+	std::string_view programName = argv[0];
 
 	// Convert old-style tar call by exploding option element and
 	// rearranging options accordingly.
@@ -1515,15 +1487,14 @@ int main(int argc, char** argv)
 		APPEND_COMMAND
 	};
 
-	int mainCommand = LIST_COMMAND;
-	int optChar;
 	// default settings
-	nbSectors = 1440;      // assume a DS disk is used
-	sectorsPerCluster = 2; // set default value
-	sizeOfDskFile = 0;
+	int nbSectors = 1440; // initially assume a DD disk is used
+	int msxPartition = 0;
+	int mainCommand = LIST_COMMAND;
+	std::string outputFile = "diskimage.dsk";
+	bool msxAllPart = false;
 
-	outputFile = "diskimage.dsk";
-
+	int optChar;
 	while (optChar = getopt_long(argc, argv, OPTION_STRING, long_options, 0),
 	       optChar != -1 && optChar != 1) {
 		char* optX = optarg;
@@ -1540,16 +1511,9 @@ int main(int argc, char** argv)
 			break;
 
 		case '?':
-			display_usage();
+			displayUsage(programName);
 
 		case 0:
-			break;
-
-		case 1:
-			// File name or non-parsed option, because of
-			// RETURN_IN_ORDER ordering triggered by the leading
-			// dash in OPTION_STRING.
-			inputFile = optX;
 			break;
 
 		case '1':
@@ -1584,7 +1548,6 @@ int main(int argc, char** argv)
 			break;
 
 		case 'M':
-			msxDirOption = true;
 			msxHostDir = optX;
 			break;
 
@@ -1601,7 +1564,7 @@ int main(int argc, char** argv)
 		case 't':
 			mainCommand = LIST_COMMAND;
 			doExtract = false;
-			++verboseOption;
+			verboseOption = true;
 			break;
 
 		case 'u':
@@ -1614,7 +1577,7 @@ int main(int argc, char** argv)
 			break;
 
 		case 'v':
-			++verboseOption;
+			verboseOption = true;
 			break;
 
 		case 'x':
@@ -1684,7 +1647,8 @@ int main(int argc, char** argv)
 		exit(0);
 	}
 	if (showHelp) {
-		display_usage();
+		displayUsage(programName);
+		exit(0);
 	}
 	if (doFat16) {
 		EOF_FAT = 0xffff;
@@ -1696,13 +1660,13 @@ int main(int argc, char** argv)
 
 	switch (mainCommand) {
 	case CREATE_COMMAND:
-		createEmptyDSK();
+		createEmptyDSK(nbSectors);
 		chroot(msxHostDir);
 		PRT_DEBUG("optind " << optind << " argc " << argc);
 		while (optind < argc) {
 			addCreateDSK(argv[optind++]);
 		}
-		writeImageToDisk(outputFile);
+		writeImageToDisk(outputFile, nbSectors * SECTOR_SIZE);
 		break;
 
 	case LIST_COMMAND:
@@ -1737,7 +1701,7 @@ int main(int argc, char** argv)
 		keepOption = true;
 		[[fallthrough]];
 	case UPDATE_COMMAND:
-		readDSK(outputFile);
+		auto sizeOfDskFile = readDSK(outputFile);
 		if (msxPartOption) {
 			if (msxAllPart) {
 				CRITICAL_ERROR("Specific partition only!");
@@ -1750,7 +1714,7 @@ int main(int argc, char** argv)
 		while (optind < argc) {
 			updateInDSK(argv[optind++]);
 		}
-		writeImageToDisk(outputFile);
+		writeImageToDisk(outputFile, sizeOfDskFile);
 		break;
 	}
 }
