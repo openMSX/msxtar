@@ -28,10 +28,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <dirent.h>
 #include <getopt.h>
 #include <iomanip>
 #include <iostream>
+#include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -130,31 +133,25 @@ struct PhysDirEntry {
 	uint8_t index;
 };
 
-
+// The (global) disk image
 std::vector<uint8_t> dskImage;
 uint8_t* fsImage;
-std::string msxRootDir;
-std::string msxHostDir;
+
+// These are set by readBootSector()
 int maxCluster;
 int sectorsPerCluster = 2;
 int rootDirStart; // first sector from the root directory
 int rootDirEnd;   // last sector from the root directory
 int msxChrootSector;
 int msxChrootStartIndex = 0;
-int globalArgc;
-char** globalArgv;
+
+// These are set based on parsing the command line, TODO refactor this
 bool verboseOption = false;
 bool doExtract = false;
 bool doSubdirs = true;
 bool touchOption = false;
-bool keepOption = false;
 bool msxPartOption = false;
-
-static int showVersion = 0;  // If nonzero, display version information and exit
-static int showHelp = 0;     // If nonzero, display usage information and exit
-static int showDebug = 0;    // If nonzero, display debug information while running
-
-enum { DEBUG_OPTION = CHAR_MAX + 1, OTHER_OPTION };
+bool showDebug = false;
 
 // boot block created with regular nms8250 and '_format'
 static constexpr uint8_t dos1BootBlock[512] = {
@@ -227,8 +224,6 @@ static constexpr uint8_t dos2BootBlock[512] = {
 	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
 	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
 };
-
-const uint8_t* defaultBootBlock = dos2BootBlock;
 
 uint16_t getLE16(const uint8_t* x)
 {
@@ -922,7 +917,6 @@ void addCreateDSK(const std::string& fileName)
 
 		if (!doSubdirs) {
 			// put files in the directory to root
-			msxRootDir = fileName;
 			recurseDirFill(fileName, msxChrootSector, msxChrootStartIndex);
 		} else {
 			std::string msxName = makeSimpleMSXFileName(fileName);
@@ -945,13 +939,13 @@ void addCreateDSK(const std::string& fileName)
 	}
 }
 
-void updateInDSK(std::string name)
+void updateInDSK(std::string name, bool keep)
 {
 	StringOp::trimRight(name, "/\\");
 
 	// first find the filename in the current 'root dir'
 	if (findEntryInDir(makeSimpleMSXFileName(name), rootDirStart, 0)) {
-		if (keepOption) {
+		if (keep) {
 			PRT_VERBOSE("Preserving entry " << name);
 		} else {
 			updateCreateDSK(name);
@@ -965,7 +959,7 @@ void updateInDSK(std::string name)
 
 /** Create an empty disk image with correct boot sector,FAT etc.
  */
-void createEmptyDSK(int nbSectors)
+void createEmptyDSK(int nbSectors, bool dos2)
 {
 	// First create structure for the fake disk
 	// Allocate dskImage in memory
@@ -975,7 +969,7 @@ void createEmptyDSK(int nbSectors)
 	// Assign default boot disk to this instance
 	// give extra info on the boot sector
 	// and get global parameters from them (implicit readBootSector)
-	memcpy(fsImage, defaultBootBlock, SECTOR_SIZE);
+	memcpy(fsImage, dos2 ? dos2BootBlock : dos1BootBlock, SECTOR_SIZE);
 	setBootSector(nbSectors);
 
 	// Assign default empty values to disk
@@ -1269,41 +1263,49 @@ void readDSK(const std::string& fileName)
 	}
 }
 
-void doSpecifiedExtraction()
+void doSpecifiedExtraction(const std::string& fullName)
 {
-	if (optind < globalArgc) {
-		PRT_VERBOSE("Going to extract only specified files/directories");
-		std::string fullName = globalArgv[optind++];
-		std::string_view work = fullName;
-		StringOp::trimLeft(work, "/\\");
+	std::string_view work = fullName;
+	StringOp::trimLeft(work, "/\\");
 
-		int msxDirSector = msxChrootSector;
-		int msxDirStartIndex = msxChrootStartIndex;
+	int msxDirSector = msxChrootSector;
+	int msxDirStartIndex = msxChrootStartIndex;
 
-		// now resolv directory if needed
-		auto [directory, file] = StringOp::splitOnLast(work, "/\\");
-		if (!directory.empty()) {
-			msxDirSector = findStartSectorOfDir(directory);
-			if (msxDirSector == 0) {
-				std::cout << "Couldn't find " << work << '\n';
-				return;
-			}
+	// now resolv directory if needed
+	auto [directory, file] = StringOp::splitOnLast(work, "/\\");
+	if (!directory.empty()) {
+		msxDirSector = findStartSectorOfDir(directory);
+		if (msxDirSector == 0) {
+			std::cout << "Couldn't find " << work << '\n';
+			return;
 		}
+	}
 
-		MSXDirEntry* msxDirEntry = findEntryInDir(
-			makeSimpleMSXFileName(file), msxDirSector, msxDirStartIndex);
-		if (!msxDirEntry) return;
-		if (doExtract && msxDirEntry->attrib != T_MSX_DIR) {
-			PRT_VERBOSE(fullName);
-			fileExtract(fullName, msxDirEntry);
-		}
-		if (msxDirEntry->attrib == T_MSX_DIR) {
-			recurseDirExtract(file,
-			                  clusterToSector(msxDirEntry->startCluster),
-			                  2); // read subdir and skip entries for '.' and '..'
-		}
-	} else {
+	MSXDirEntry* msxDirEntry = findEntryInDir(
+		makeSimpleMSXFileName(file), msxDirSector, msxDirStartIndex);
+	if (!msxDirEntry) return;
+
+	if (doExtract && msxDirEntry->attrib != T_MSX_DIR) {
+		PRT_VERBOSE(fullName);
+		fileExtract(fullName, msxDirEntry);
+	}
+	if (msxDirEntry->attrib == T_MSX_DIR) {
+		recurseDirExtract(file,
+		                  clusterToSector(msxDirEntry->startCluster),
+		                  2); // read subdir and skip entries for '.' and '..'
+	}
+}
+
+void doSpecifiedExtraction(std::span<const std::string> args)
+{
+	if (args.empty()) {
+		// extract all
 		recurseDirExtract("", msxChrootSector, msxChrootStartIndex);
+	} else {
+		// extract only specified files/directories
+		for (const auto& arg : args) {
+			doSpecifiedExtraction(arg);
+		}
 	}
 }
 
@@ -1358,220 +1360,203 @@ void displayUsage(std::string_view programName)
 		"\n";
 }
 
-static constexpr const char* OPTION_STRING =
-	"txcruAkmf:S:12MP:v" // documented (same order as in help text)
-	"jz"; // undocumented
-
-static struct option long_options[] = {
-	// documented options (keep these in the same order as in the help text)
-	{"list",              no_argument,       nullptr,       't'},
-	{"extract",           no_argument,       nullptr,       'x'},
-	{"get",               no_argument,       nullptr,       'x'},
-	{"create",            no_argument,       nullptr,       'c'},
-	{"append",            no_argument,       nullptr,       'r'},
-	{"update",            no_argument,       nullptr,       'u'},
-	{"catenate",          no_argument,       nullptr,       'A'},
-	{"concatenate",       no_argument,       nullptr,       'A'},
-	{"keep",              no_argument,       nullptr,       'k'},
-	{"modification-time", no_argument,       nullptr,       'm'},
-	{"file",              required_argument, nullptr,       'f'},
-	{"size",              required_argument, nullptr,       'S'},
-	{"dos1",              no_argument,       nullptr,       '1'},
-	{"dos2",              no_argument,       nullptr,       '2'},
-	{"msxdir",            required_argument, nullptr,       'M'},
-	{"partition",         required_argument, nullptr,       'P'},
-	{"help",              no_argument,       &showHelp,      1 },
-	{"version",           no_argument,       &showVersion,   1 },
-	{"verbose",           no_argument,       nullptr,       'v'},
-
-	// undocumented option (developer-only)
-	{"debug",             no_argument,       nullptr, DEBUG_OPTION},
-
-	// undocumented options, parse them, but they have no effect
-	{"bzip2",             no_argument,       nullptr,       'j'},
-	{"gunzip",            no_argument,       nullptr,       'z'},
-	{"gzip",              no_argument,       nullptr,       'z'},
-	{"ungzip",            no_argument,       nullptr,       'z'},
-	{nullptr, 0, nullptr, 0},
+// (Possibly) expand the first argument into multiple flags.
+// For example, a command line like:
+//     tar cvf name
+// gets expanded into
+//     tar -c -v -f name
+struct ExpandResult {
+	std::vector<char*> argv;
+	std::deque<std::string> extraStorage;
 };
-
-int main(int argc, char** argv)
+ExpandResult expandFirstArgument(std::span<char*> args, const char* optionString)
 {
-	// code copied literally from GNU-tar.c
-	// this code is to be able to handle a command like : 'tar cvf name'
-	// this will be translated to 'tar -c -v -f name'
+	ExpandResult result;
+	if (args.size() > 1 && args[1][0] != '-') {
+		// copy argv[0] argument
+		result.argv.push_back(args[0]);
 
-	std::string_view programName = argv[0];
+		// expand argv[1] (possibly with extra arguments)
+		auto it = args.begin() + 2;
+		for (const char* argv1 = args[1]; *argv1; ++argv1) {
+			std::string option = "-X";
+			option[1] = *argv1;
+			result.extraStorage.push_back(option);
+			result.argv.push_back(const_cast<char*>(result.extraStorage.back().c_str()));
 
-	// Convert old-style tar call by exploding option element and
-	// rearranging options accordingly.
-	if (argc > 1 && argv[1][0] != '-') {
-		PRT_DEBUG("reconverting command line options");
-
-		// Initialize a constructed option
-		char buffer[3];
-		buffer[0] = '-';
-		buffer[2] = '\0';
-
-		// Allocate a new argument array, and copy program name in it
-		int new_argc = argc - 1 + strlen(argv[1]);
-		char** new_argv = static_cast<char**>(malloc((new_argc + 1) * sizeof(char*)));
-		char** in = argv;
-		char** out = new_argv;
-		*out++ = *in++;
-
-		// Copy each old letter option as a separate option, and have
-		// the corresponding argument moved next to it
-		for (const char* letter = *in++; *letter; ++letter) {
-			buffer[1] = *letter;
-			*out++ = strdup(buffer);
-			const char* cursor = strchr(OPTION_STRING, *letter);
+			const char* cursor = strchr(optionString, *argv1);
 			if (cursor && cursor[1] == ':') {
-				if (in < argv + argc) {
-					*out++ = *in++;
-				} else {
-					// this is the original line
-					// USAGE_ERROR ((0, 0, _("Old option
-					// `%c' requires an argument."),
-					//	      *letter));
-					exit(1);
+				if (it == args.end()) {
+					CRITICAL_ERROR("Missing argument for " << option);
 				}
+				result.argv.push_back(*it++);
 			}
 		}
 
-		// Copy all remaining options
-		while (in < argv + argc) *out++ = *in++;
-		*out = 0;
-
-		// Replace the old option list by the new one
-		argc = new_argc;
-		argv = new_argv;
+		// copy remaining arguments
+		result.argv.insert(result.argv.end(), it, args.end());
+	} else {
+		// don't expand argv[1], take command line unchanged
+		result.argv.assign(args.begin(), args.end());
 	}
+	return result;
+}
 
-	// Parse all options and non-options as they appear
-	// quick hack need to clear this one later
-	globalArgc = argc;
-	globalArgv = argv;
-
-	enum {
-		CREATE_COMMAND,
-		LIST_COMMAND,
-		EXTRACT_COMMAND,
-		UPDATE_COMMAND,
-		APPEND_COMMAND
+struct ParseResult {
+	enum class Command {
+		NONE, CREATE, LIST, EXTRACT, UPDATE, APPEND,
 	};
 
-	// default settings
+	std::string_view programName;
+	std::vector<std::string> args;
+
+	std::string file = "diskimage.dsk";
+	std::string msxHostDir;
+	Command command = Command::NONE;
 	int nbSectors = 1440; // initially assume a DD disk is used
-	int msxPartition = 0;
-	int mainCommand = LIST_COMMAND;
-	std::string outputFile = "diskimage.dsk";
-	bool msxAllPart = false;
+	std::optional<int> partition;
+	bool extract = false;
+	bool dos2 = true;
+	bool keep = false;
+	bool touch = false;
+	bool debug = false;
+	bool help = false;
+	bool version = false;
+	bool verbose = false;
+};
+ParseResult parseCommandLine(std::span<char*> origArgv)
+{
+	const char* optionString =
+		"txcruAkmf:S:12MP:v" // documented (same order as in help text)
+		"jz"; // undocumented
+
+	static constexpr int DEBUG_OPTION = CHAR_MAX + 1;
+	int version = 0;
+	int help = 0;
+	struct option longOptions[] = {
+		// documented options (keep these in the same order as in the help text)
+		{"list",              no_argument,       nullptr, 't'},
+		{"extract",           no_argument,       nullptr, 'x'},
+		{"get",               no_argument,       nullptr, 'x'},
+		{"create",            no_argument,       nullptr, 'c'},
+		{"append",            no_argument,       nullptr, 'r'},
+		{"update",            no_argument,       nullptr, 'u'},
+		{"catenate",          no_argument,       nullptr, 'A'},
+		{"concatenate",       no_argument,       nullptr, 'A'},
+		{"keep",              no_argument,       nullptr, 'k'},
+		{"modification-time", no_argument,       nullptr, 'm'},
+		{"file",              required_argument, nullptr, 'f'},
+		{"size",              required_argument, nullptr, 'S'},
+		{"dos1",              no_argument,       nullptr, '1'},
+		{"dos2",              no_argument,       nullptr, '2'},
+		{"msxdir",            required_argument, nullptr, 'M'},
+		{"partition",         required_argument, nullptr, 'P'},
+		{"help",              no_argument,       &help,    1 },
+		{"version",           no_argument,       &version, 1 },
+		{"verbose",           no_argument,       nullptr, 'v'},
+
+		// undocumented option (developer-only)
+		{"debug",             no_argument,       nullptr, DEBUG_OPTION},
+
+		// undocumented options, parse them, but they have no effect
+		{"bzip2",             no_argument,       nullptr,       'j'},
+		{"gunzip",            no_argument,       nullptr,       'z'},
+		{"gzip",              no_argument,       nullptr,       'z'},
+		{"ungzip",            no_argument,       nullptr,       'z'},
+		{nullptr, 0, nullptr, 0},
+	};
+
+	auto [argv, _] = expandFirstArgument(origArgv, optionString);
+
+	ParseResult result;
+	result.programName = argv[0];
 
 	int optChar;
-	while (optChar = getopt_long(argc, argv, OPTION_STRING, long_options, 0),
+	while (optChar = getopt_long(argv.size(), argv.data(), optionString, longOptions, 0),
 	       optChar != -1 && optChar != 1) {
 		char* optX = optarg;
 		if (optX && *optX == '=') ++optX;
 
 		switch (optChar) {
 		case DEBUG_OPTION:
-			showDebug = 1;
-			std::cerr << "--------------------------------------------------------\n"
-			             "This debug mode is intended for people who want to check\n"
-			             "the dataflow within the MSXtar program.\n"
-			             "Consider this mode very unpractical for normal usage :-)\n"
-			             "--------------------------------------------------------\n";
+			result.debug = true;
 			break;
 
 		case '?':
-			displayUsage(programName);
-
-		case 0:
+			result.help = true;
 			break;
 
 		case '1':
-			defaultBootBlock = dos1BootBlock;
-			doSubdirs = false;
+			result.dos2 = false;
 			break;
 
 		case '2':
-			defaultBootBlock = dos2BootBlock;
-			doSubdirs = true;
+			result.dos2 = true;
 			break;
 
 		case 'c':
-			mainCommand = CREATE_COMMAND;
+			result.command = ParseResult::Command::CREATE;
 			break;
 
 		case 'f':
-			outputFile = optX;
-			break;
-
-		case 'j':
-			// set_use_compress_program_option ("bzip2");
+			result.file = optX;
 			break;
 
 		case 'k':
-			// Don't replace existing files
-			keepOption = true;
+			result.keep = true;
 			break;
 
 		case 'm':
-			touchOption = true;
+			result.touch = true;
 			break;
 
 		case 'M':
-			msxHostDir = optX;
+			result.msxHostDir = optX;
 			break;
 
 		case 'P':
-			msxPartOption = true;
 			if (strncasecmp(optX, "all", 3) == 0) {
-				msxAllPart = true;
-				msxPartition = 0;
+				result.partition = -1;
 			} else {
-				msxPartition = strtol(optX, &optX, 10);
+				// TODO check between 0-31
+				result.partition = strtol(optX, &optX, 10);
 			}
 			break;
 
 		case 't':
-			mainCommand = LIST_COMMAND;
-			doExtract = false;
-			verboseOption = true;
+			result.command = ParseResult::Command::LIST;
+			result.extract = false;
+			result.verbose = true;
 			break;
 
 		case 'u':
-			mainCommand = UPDATE_COMMAND;
+			result.command = ParseResult::Command::UPDATE;
 			break;
 
 		case 'A':
 		case 'r':
-			mainCommand = APPEND_COMMAND;
+			result.command = ParseResult::Command::APPEND;
 			break;
 
 		case 'v':
-			verboseOption = true;
+			result.verbose = true;
 			break;
 
 		case 'x':
-			mainCommand = EXTRACT_COMMAND;
-			doExtract = true;
-			break;
-		case 'z':
-			// set_use_compress_program_option ("gzip");
+			result.command = ParseResult::Command::EXTRACT;
+			result.extract = true;
 			break;
 
 		case 'S':
 			std::string imageSize = optX;
 			if (strncasecmp(imageSize.c_str(), "single", 6) == 0) {
-				nbSectors = 720;
+				result.nbSectors = 720;
 			} else if (strncasecmp(imageSize.c_str(), "double",
 			                       6) == 0) {
-				nbSectors = 1440;
+				result.nbSectors = 1440;
 			} else if (strncasecmp(imageSize.c_str(), "ide", 3) ==
 			           0) {
-				nbSectors = 65401;
+				result.nbSectors = 65401;
 			} else {
 				// first find possible 'b','k' or 'm' end character
 				int size = 0;
@@ -1598,15 +1583,37 @@ int main(int argc, char** argv)
 					scale = SECTOR_SIZE;
 					break;
 				}
-				nbSectors = (size * scale) / SECTOR_SIZE;
+				result.nbSectors = (size * scale) / SECTOR_SIZE;
 			}
 			break;
 		}
 	}
+	result.help |= help;
+	result.version |= version;
 
-	// Process trivial options first
+	result.args.assign(argv.begin() + optind, argv.end());
 
-	if (showVersion) {
+	return result;
+}
+
+
+int main(int argc, char** argv)
+{
+	auto parsed = parseCommandLine(std::span{argv, argv + argc});
+
+	if (parsed.debug) {
+		showDebug = true; // TODO
+		std::cerr << "--------------------------------------------------------\n"
+		             "This debug mode is intended for people who want to check\n"
+		             "the dataflow within the MSXtar program.\n"
+		             "Consider this mode very unpractical for normal usage :-)\n"
+		             "--------------------------------------------------------\n";
+	}
+	if (parsed.help) {
+		displayUsage(parsed.programName);
+		exit(0);
+	}
+	if (parsed.version) {
 		std::cout <<
 			"msxtar 0.9\n"
 			"Copyright (C) 2004, the openMSX team.\n"
@@ -1620,36 +1627,40 @@ int main(int argc, char** argv)
 			"\n";
 		exit(0);
 	}
-	if (showHelp) {
-		displayUsage(programName);
-		exit(0);
-	}
 
-	if (argc < 2) {
-		CRITICAL_ERROR("Not enough arguments");
-	}
+	// TODO refactor this
+	doSubdirs = parsed.dos2;
+	msxPartOption = parsed.partition.has_value();
+	touchOption = parsed.touch;
+	doExtract = parsed.extract;
+	verboseOption = parsed.verbose;
 
-	switch (mainCommand) {
-	case CREATE_COMMAND:
-		createEmptyDSK(nbSectors);
-		chroot(msxHostDir);
-		PRT_DEBUG("optind " << optind << " argc " << argc);
-		while (optind < argc) {
-			addCreateDSK(argv[optind++]);
+
+	switch (parsed.command) {
+	case ParseResult::Command::NONE:
+		CRITICAL_ERROR(
+			"You must specify one of -Actrux\n"
+			"Try " << parsed.programName << " --help for more information.");
+
+	case ParseResult::Command::CREATE:
+		createEmptyDSK(parsed.nbSectors, parsed.dos2);
+		chroot(parsed.msxHostDir);
+		for (const auto& arg : parsed.args) {
+			addCreateDSK(arg);
 		}
-		writeImageToDisk(outputFile);
+		writeImageToDisk(parsed.file);
 		break;
 
-	case LIST_COMMAND:
-	case EXTRACT_COMMAND:
-		readDSK(outputFile);
-		if (msxPartOption) {
-			if (msxAllPart) {
-				for (msxPartition = 0; msxPartition < 31; ++msxPartition) {
-					PRT_VERBOSE("Handling partition " << msxPartition);
-					if (chPart(msxPartition)) {
+	case ParseResult::Command::LIST:
+	case ParseResult::Command::EXTRACT:
+		readDSK(parsed.file);
+		if (parsed.partition) {
+			if (*parsed.partition == -1) {
+				for (int partition = 0; partition < 31; ++partition) {
+					PRT_VERBOSE("Handling partition " << partition);
+					if (chPart(partition)) {
 						char p[40];
-						sprintf(p, "./" "PARTITION%02i", msxPartition);
+						sprintf(p, "./" "PARTITION%02i", partition);
 						std::string dirname = p;
 						mkdir_ex(dirname.c_str(), ACCESSPERMS);
 						recurseDirExtract(
@@ -1657,35 +1668,33 @@ int main(int argc, char** argv)
 					}
 				}
 			} else {
-				if (chPart(msxPartition)) {
-					chroot(msxHostDir);
-					doSpecifiedExtraction();
+				if (chPart(*parsed.partition)) {
+					chroot(parsed.msxHostDir);
+					doSpecifiedExtraction(parsed.args);
 				}
 			}
 		} else {
-			chroot(msxHostDir);
-			doSpecifiedExtraction();
+			chroot(parsed.msxHostDir);
+			doSpecifiedExtraction(parsed.args);
 		}
 		break;
 
-	case APPEND_COMMAND:
-		keepOption = true;
+	case ParseResult::Command::APPEND:
+		parsed.keep = true; // TODO make 'parsed' const
 		[[fallthrough]];
-	case UPDATE_COMMAND:
-		readDSK(outputFile);
-		if (msxPartOption) {
-			if (msxAllPart) {
+	case ParseResult::Command::UPDATE:
+		readDSK(parsed.file);
+		if (parsed.partition) {
+			if (*parsed.partition == -1) {
 				CRITICAL_ERROR("Specific partition only!");
-			} else {
-				chPart(msxPartition);
 			}
+			chPart(*parsed.partition);
 		}
-		PRT_DEBUG("optind " << optind << " argc " << argc);
-		chroot(msxHostDir);
-		while (optind < argc) {
-			updateInDSK(argv[optind++]);
+		chroot(parsed.msxHostDir);
+		for (const auto& arg : parsed.args) {
+			updateInDSK(arg, parsed.keep);
 		}
-		writeImageToDisk(outputFile);
+		writeImageToDisk(parsed.file);
 		break;
 	}
 }
