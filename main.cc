@@ -111,12 +111,7 @@ struct PC98Part {
 	uint8_t name[16];
 };
 
-#ifndef ACCESSPERMS
-#define ACCESSPERMS 0777 // is this ok?
-#endif
-
-uint16_t EOF_FAT = 0x0FFF; // signals EOF in FAT12
-
+static constexpr uint16_t EOF_FAT = 0x0FFF; // signals EOF in FAT12
 static constexpr int SECTOR_SIZE = 512;
 static constexpr int NUM_OF_ENT = SECTOR_SIZE / 0x20; // number of entries per sector
 
@@ -404,12 +399,12 @@ uint16_t findFirstFreeCluster()
 	return cluster;
 }
 
-void mkdir_ex(const char* name, mode_t perm)
+void mkdir_ex(const char* name)
 {
 #ifdef __WIN32__
 	mkdir(name);
 #else
-	mkdir(name, perm);
+	mkdir(name, 0755);
 #endif
 }
 
@@ -616,7 +611,7 @@ int addMSXSubdir(const std::string& msxName, int t, int d, int sector)
 	// now add the '.' and '..' entries!!
 	dirEntry = reinterpret_cast<MSXDirEntry*>(fsImage + SECTOR_SIZE * logicalSector);
 	memset(dirEntry, 0, sizeof(MSXDirEntry));
-	memset(dirEntry, 0x20, 11); // all spaces
+	memset(dirEntry, ' ', 11); // all spaces
 	memset(dirEntry, '.', 1);
 	dirEntry->attrib = T_MSX_DIR;
 	dirEntry->time = t;
@@ -625,7 +620,7 @@ int addMSXSubdir(const std::string& msxName, int t, int d, int sector)
 
 	++dirEntry;
 	memset(dirEntry, 0, sizeof(MSXDirEntry));
-	memset(dirEntry, 0x20, 11); // all spaces
+	memset(dirEntry, ' ', 11); // all spaces
 	memset(dirEntry, '.', 2);
 	dirEntry->attrib = T_MSX_DIR;
 	dirEntry->time = t;
@@ -651,7 +646,6 @@ int addSubDirToDSK(const std::string& hostName, const std::string& msxName, int 
 {
 	// compute time/date stamps
 	struct stat fst;
-	memset(&fst, 0, sizeof(struct stat));
 	stat(hostName.c_str(), &fst);
 	struct tm mtim = *localtime(&(fst.st_mtime));
 
@@ -670,7 +664,6 @@ void alterFileInDSK(MSXDirEntry* msxDirEntry, const std::string& hostName)
 {
 	bool needsNew = false;
 	struct stat fst;
-	memset(&fst, 0, sizeof(struct stat));
 	stat(hostName.c_str(), &fst);
 	int fSize = fst.st_size;
 
@@ -784,7 +777,6 @@ void addFileToDSK(const std::string& fullHostName, int sector, uint8_t dirEntryI
 
 	// compute time/date stamps
 	struct stat fst;
-	memset(&fst, 0, sizeof(struct stat));
 	stat(fullHostName.c_str(), &fst);
 	struct tm mtim = *localtime(&(fst.st_mtime));
 	int td[2];
@@ -799,7 +791,6 @@ void addFileToDSK(const std::string& fullHostName, int sector, uint8_t dirEntryI
 int checkStat(const std::string& name)
 {
 	struct stat fst;
-	memset(&fst, 0, sizeof(struct stat));
 	stat(name.c_str(), &fst);
 
 	if (fst.st_mode & S_IFDIR) return 0; // it's a directory
@@ -871,7 +862,6 @@ void updateCreateDSK(const std::string& fileName)
 
 	PRT_DEBUG("trying to stat: " << fileName);
 	struct stat fst;
-	memset(&fst, 0, sizeof(struct stat));
 	stat(fileName.c_str(), &fst);
 
 	if (fst.st_mode & S_IFDIR) {
@@ -908,7 +898,6 @@ void addCreateDSK(const std::string& fileName)
 	// found in the 'fileName' directory or the single file
 	PRT_DEBUG("addCreateDSK(" << fileName << ");");
 	struct stat fst;
-	memset(&fst, 0, sizeof(struct stat));
 	stat(fileName.c_str(), &fst);
 
 	if (fst.st_mode & S_IFDIR) {
@@ -1068,7 +1057,7 @@ int findStartSectorOfDir(std::string_view dirName)
 			msxDirStartIndex = 2;
 			totalPath += '/';
 			totalPath += directory;
-			mkdir_ex(totalPath.c_str(), ACCESSPERMS);
+			mkdir_ex(totalPath.c_str());
 		} else {
 			PRT_VERBOSE("Couldn't find directory: " << dirName);
 			return 0;
@@ -1203,7 +1192,7 @@ void recurseDirExtract(std::string_view dirName, int sector, int dirEntryIndex)
 				fileExtract(fullName, dirEntry);
 			}
 			if (dirEntry->attrib == T_MSX_DIR) {
-				mkdir_ex(fullName.c_str(), ACCESSPERMS);
+				mkdir_ex(fullName.c_str());
 				// now change the access time
 				changeTime(fullName, dirEntry);
 				recurseDirExtract(
@@ -1233,10 +1222,8 @@ void readDSK(const std::string& fileName)
 {
 	// First read the disk image into memory
 
-	struct stat fst;
-	memset(&fst, 0, sizeof(struct stat));
-
 	PRT_DEBUG("trying to stat: " << fileName);
+	struct stat fst;
 	stat(fileName.c_str(), &fst);
 	size_t fsize = fst.st_size;
 
@@ -1662,7 +1649,7 @@ int main(int argc, char** argv)
 						char p[40];
 						sprintf(p, "./" "PARTITION%02i", partition);
 						std::string dirname = p;
-						mkdir_ex(dirname.c_str(), ACCESSPERMS);
+						mkdir_ex(dirname.c_str());
 						recurseDirExtract(
 							dirname, msxChrootSector, msxChrootStartIndex);
 					}
